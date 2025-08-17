@@ -1,0 +1,31 @@
+[project]
+name = "claude-conversation-analyzer"
+version = "0.1.0"
+description = "Analyze Claude Code conversations to improve CLAUDE.md files"
+authors = [{name = "Your Name", email = "your.email@example.com"}]
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "anthropic>=0.18.0",
+    "pyyaml>=6.0",
+    "click>=8.1.0",
+    "rich>=13.0.0",
+    "pandas>=2.0.0",
+    "jinja2>=3.1.0",
+    "plotly>=5.14.0",
+    "jsonlines>=3.1.0",
+    "tqdm>=4.65.0",
+    "python-dotenv>=1.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+
+[tool.black]
+line-length = 100
+target-version = ['py38', 'py39', 'py310', 'py311']
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I", "N", "UP", "YTT", "B", "A", "C4", "DTZ", "ISC", "ICN", "PIE", "PT", "RET", "SIM", "ARG"]

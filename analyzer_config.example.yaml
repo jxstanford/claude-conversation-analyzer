@@ -1,0 +1,91 @@
+# Claude Conversation Analyzer Configuration Example
+# Copy this file to analyzer_config.yaml and customize
+
+# Required: Path to conversations directory
+conversations_dir: "~/.claude/projects"
+
+# Optional: Path to existing CLAUDE.md file
+claude_md_path: "~/.claude/CLAUDE.md"
+
+# Output directory for analysis results
+output_dir: "./analysis_results"
+
+# Analysis configuration
+analysis:
+  # All problematic conversations are analyzed automatically
+  
+  # Models to use for each tier
+  models:
+    classifier: "claude-3-5-haiku-20241022"
+    analyzer: "claude-sonnet-4-20250514"
+    synthesizer: "claude-opus-4-1-20250805"
+  
+  # The analyzer automatically focuses on problematic conversations including:
+  # - Interventions (user stops/corrections)
+  # - Failed or partially completed tasks
+  # - Conversations with frustrated tone
+  # - Technical errors
+
+# Output configuration
+output:
+  # Output formats to generate
+  formats:
+    - markdown  # Markdown reports
+    - json     # Raw data
+    - html     # Interactive dashboard
+  
+  # Include examples from conversations
+  include_examples: true
+  
+  # Number of examples to include per category
+  max_examples_per_category: 5
+
+# Pattern detection configuration
+patterns:
+  # Custom intervention patterns (regex)
+  custom_interventions:
+    - pattern: "let me handle this"
+      category: "user_takeover"
+      severity: "high"
+    
+    - pattern: "that's not what I meant"
+      category: "misunderstanding"
+      severity: "medium"
+  
+  # Custom success indicators
+  custom_success_signals:
+    - pattern: "perfect, thanks"
+      category: "user_satisfied"
+    
+    - pattern: "exactly what I needed"
+      category: "task_completed"
+
+# Privacy configuration
+privacy:
+  # Redact sensitive information
+  redact_sensitive: false
+  
+  # Patterns to redact (if redact_sensitive is true)
+  redaction_patterns:
+    - "api[_-]?key"
+    - "password"
+    - "secret"
+    - "token"
+
+# Advanced options
+advanced:
+  # Maximum conversation length to analyze (in messages)
+  max_conversation_length: 1000
+  
+  # Minimum conversation length to include
+  min_conversation_length: 4
+  
+  # Timeout for API calls (seconds)
+  api_timeout: 60
+  
+  # Retry failed API calls
+  retry_on_failure: true
+  max_retries: 3
+  
+  # Parallel processing
+  max_concurrent_requests: 10
