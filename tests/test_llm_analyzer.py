@@ -212,7 +212,7 @@ class TestLLMAnalyzer:
         mock_analyzer.async_client.messages.create.return_value = mock_response
         
         result = await mock_analyzer._analyze_multiple_interventions(
-            interventions, sample_messages, sample_classification
+            interventions, sample_messages, sample_classification, "test-conv-123"
         )
         
         # Should have filtered out the low-quality interventions

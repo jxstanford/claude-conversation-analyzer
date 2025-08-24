@@ -617,7 +617,7 @@ Return a comprehensive synthesis:
                         logger.debug(f"Found {len(interventions)} interventions in {conv_file.conversation_id}")
                         # Analyze multiple interventions in one call
                         task = self._analyze_multiple_interventions(
-                            interventions, messages, conv_classification
+                            interventions, messages, conv_classification, conv_file.conversation_id
                         )
                         batch_tasks.append(task)
                         batch_metadata.append((conv_file, 'multiple_interventions'))
@@ -897,7 +897,8 @@ Return a comprehensive synthesis:
     async def _analyze_multiple_interventions(self,
                                             interventions: List[Intervention],
                                             messages: List[Message],
-                                            classification: ConversationClassification) -> List[InterventionAnalysis]:
+                                            classification: ConversationClassification,
+                                            conversation_id: str) -> List[InterventionAnalysis]:
         """Analyze multiple interventions in a single API call."""
         # First, filter out obviously low-quality interventions
         detector = InterventionDetector()
@@ -915,7 +916,7 @@ Return a comprehensive synthesis:
                 if reason:
                     filter_type = reason.split(':')[0]
                     filter_reasons[filter_type] = filter_reasons.get(filter_type, 0) + 1
-                logger.debug(f"Filtered intervention ({reason}): {intervention.type.value} - '{intervention.user_message[:50]}...'")
+                logger.debug(f"[{conversation_id}] Filtered intervention ({reason}): {intervention.type.value} - '{intervention.user_message[:50]}...'")
         
         # If we still have too many, we'll need to classify them
         if len(potentially_valuable) > 15:
@@ -934,20 +935,14 @@ Return a comprehensive synthesis:
             # Analyze all potentially valuable interventions
             interventions_to_analyze = potentially_valuable[:10]
         
-        # Log filtering results with detailed statistics
-        if len(interventions) > len(interventions_to_analyze):
-            logger.info(f"Filtered interventions: {len(interventions)} -> {len(potentially_valuable)} -> {len(interventions_to_analyze)}")
-            logger.info(f"Removed {removed_count} obviously low-quality interventions")
-            
-            # Log filter reason statistics if any were filtered
-            if filter_reasons:
-                reason_summary = ", ".join([f"{count} {reason}" for reason, count in filter_reasons.items()])
-                logger.info(f"Filter reasons: {reason_summary}")
-            
-            if removed_count == 0 and len(interventions) > 5:
-                # Log a sample of interventions to understand why nothing was filtered
-                logger.debug(f"Sample intervention types: {[i.type.value for i in interventions[:3]]}")
-                logger.debug(f"Sample intervention messages: {[i.user_message[:30] for i in interventions[:3]]}")
+        # Log filtering results in a single line
+        if filter_reasons:
+            # Format: "filtered 2 system_message, 1 too_short"
+            filter_summary = ", ".join([f"{count} {reason}" for reason, count in filter_reasons.items()])
+            logger.info(f"[{conversation_id}] Detected {len(interventions)} interventions: filtered {filter_summary}")
+        else:
+            # No filtering needed
+            logger.info(f"[{conversation_id}] Detected {len(interventions)} interventions: no filtering needed")
         
         # Format interventions list
         interventions_list = ""

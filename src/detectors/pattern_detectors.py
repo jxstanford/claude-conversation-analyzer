@@ -163,7 +163,7 @@ class InterventionDetector:
                             interventions.append(intervention)
                         break
         
-        logger.info(f"Detected {len(interventions)} total interventions in conversation")
+        logger.debug(f"Detected {len(interventions)} total interventions in conversation")
         return interventions
     
     def _create_intervention(self, 
