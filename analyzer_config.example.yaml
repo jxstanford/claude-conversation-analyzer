@@ -14,11 +14,12 @@ output_dir: "./analysis_results"
 analysis:
   # All problematic conversations are analyzed automatically
   
-  # Models to use for each tier
+  # Models to use for each phase
   models:
-    classifier: "claude-3-5-haiku-20241022"
-    analyzer: "claude-sonnet-4-20250514"
-    synthesizer: "claude-opus-4-1-20250805"
+    classifier: "claude-3-5-haiku-20241022"      # Phase 1: Classification
+    analyzer: "claude-sonnet-4-20250514"         # Phase 2: Intervention Analysis
+    deep_analyzer: "claude-opus-4-1-20250805"    # Phase 3: Deep Analysis
+    synthesizer: "claude-opus-4-1-20250805"      # Phase 4: CLAUDE.md Synthesis
   
   # The analyzer automatically focuses on problematic conversations including:
   # - Interventions (user stops/corrections)

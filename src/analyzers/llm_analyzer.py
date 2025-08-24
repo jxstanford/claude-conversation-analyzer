@@ -18,11 +18,7 @@ from ..detectors import Intervention, InterventionType, InterventionDetector
 logger = logging.getLogger(__name__)
 
 
-class AnalysisDepth(Enum):
-    """Depth of analysis to perform."""
-    QUICK = "quick"
-    STANDARD = "standard"
-    DEEP = "deep"
+# AnalysisDepth enum removed - deep analysis is always performed
 
 
 @dataclass
@@ -79,6 +75,7 @@ class LLMAnalyzer:
         self.models = models or {
             "classifier": "claude-3-5-haiku-20241022",
             "analyzer": "claude-sonnet-4-20250514",
+            "deep_analyzer": "claude-opus-4-1-20250805",
             "synthesizer": "claude-opus-4-1-20250805"
         }
         
@@ -197,16 +194,19 @@ Interventions to analyze:
 {interventions_list}
 
 Focus on extracting ACTIONABLE LESSONS from interventions where the user is teaching/correcting behavior.
+
+IMPORTANT: If a conversation appears truncated or ends abruptly, analyze only the patterns visible before truncation. Do NOT generate rules about ensuring complete conversations.
+
 For EACH intervention listed above, analyze and return ONLY valid JSON with NO comments:
 {{
     "interventions": [
         {{
             "index": 0,
-            "root_cause": "Why this intervention happened",
-            "what_went_wrong": "Specific mistake or issue",
+            "root_cause": "Why this intervention happened (focus on Claude's behavior, not conversation artifacts)",
+            "what_went_wrong": "Specific mistake or issue in Claude's approach",
             "claude_assumption": "What Claude incorrectly assumed",
             "user_expectation": "What user actually wanted",
-            "prevention_rule": "SPECIFIC, CONCRETE rule that would prevent this (e.g., 'Always ask before creating new files' not 'Be more careful')",
+            "prevention_rule": "SPECIFIC, CONCRETE rule for CLAUDE.md that would prevent this (e.g., 'Always ask before creating new files' not 'Ensure complete conversation')",
             "severity_assessment": "low/medium/high",
             "pattern_category": "scope_creep/premature_action/wrong_approach/misunderstanding/incomplete_task/technical_error/other"
         }}
@@ -228,16 +228,32 @@ Classification results:
 Intervention analyses:
 {intervention_analyses}
 
+IMPORTANT CONTEXT: Some conversations may appear truncated or incomplete. Focus your analysis on the patterns and behaviors shown, not on the truncation itself.
+
 Analyze:
-1. systemic_issues: List fundamental problems in this interaction
-2. missing_claude_md_guidance: What guidance would have helped?
-3. successful_patterns: What worked well?
-4. generalizable_lessons: Lessons that apply broadly
+1. systemic_issues: List fundamental problems in Claude's approach or behavior
+2. missing_claude_md_guidance: What general guidance would have helped?
+3. successful_patterns: What worked well that should be reinforced?
+4. generalizable_lessons: Lessons that apply broadly to any Claude Code user
 5. tool_usage_effectiveness: How effectively were tools used?
 6. claude_md_compliance: Which rules were followed/violated?
-7. recommendations: Specific improvements for CLAUDE.md
+7. recommendations: General improvements for CLAUDE.md that would help ANY user
 
-Focus on actionable insights that would prevent similar issues.
+CRITICAL: Your recommendations must be:
+- Applicable to any Claude Code user, not specific to this analysis
+- Focused on coding practices, tool usage, and AI interaction patterns
+- NOT about conversation logs, truncation, or analysis artifacts
+- Practical guidelines that improve Claude's software development assistance
+
+Examples of GOOD recommendations:
+- "Always verify file existence before editing"
+- "Use TodoWrite to track multi-step tasks"
+- "Run tests after each code change"
+
+Examples of BAD recommendations (do NOT generate these):
+- "Show complete conversation logs"
+- "Ensure conversations aren't truncated"
+- "Include full analysis context"
 
 Return ONLY valid JSON:
 {{
@@ -262,6 +278,8 @@ ANALYSIS FINDINGS:
 - Top systemic issues: {top_issues}
 - Top recommendations from analysis: {top_recommendations}
 
+IMPORTANT CONTEXT: Some analyzed conversations may have been truncated or incomplete. Focus on improving Claude's general coding assistance, not addressing analysis artifacts.
+
 TASK:
 1. First, analyze the existing document:
    - Identify its structure, sections, and formatting style
@@ -280,6 +298,15 @@ TASK:
    - Integrate naturally with existing sections
    - Enhance rather than duplicate existing rules
    - Add new guidance only where gaps exist
+   - Focus on practical coding and tool usage patterns
+   - Apply to ANY Claude Code user's workflow
+
+CRITICAL GUIDELINES FOR RECOMMENDATIONS:
+- Generate rules that improve Claude's software development assistance
+- Focus on tool usage, verification practices, and coding patterns
+- Avoid any recommendations about conversation logs or analysis processes
+- Ensure all new rules would benefit a typical Claude Code user
+- Keep recommendations actionable and specific to coding tasks
 
 Return a comprehensive synthesis:
 {{
@@ -328,7 +355,6 @@ Return a comprehensive synthesis:
     async def analyze_conversations(self,
                                   conversations: List[Tuple[ConversationFile, List[Message]]],
                                   claude_md_content: Optional[str] = None,  # Raw CLAUDE.md content
-                                  depth: AnalysisDepth = AnalysisDepth.STANDARD,
                                   tracker: Optional['ProcessingTracker'] = None,
                                   force_all: bool = False) -> Dict[str, Any]:
         """Analyze conversations using multi-tier approach with state tracking."""
@@ -374,8 +400,8 @@ Return a comprehensive synthesis:
             logger.info("Phase 2: No problematic conversations found to analyze")
         
         # Phase 3: Deep analysis on all problematic conversations
-        if depth == AnalysisDepth.DEEP and problematic_conversations:
-            logger.info(f"Phase 3: Deep analysis with {self.models['synthesizer']}...")
+        if problematic_conversations:
+            logger.info(f"Phase 3: Deep analysis with {self.models['deep_analyzer']}...")
             deep_analyses = await self._deep_analyze_conversations(
                 problematic_conversations, classifications, intervention_analyses, claude_md_content, tracker, force_all
             )
@@ -400,10 +426,10 @@ Return a comprehensive synthesis:
                 )
         
         # Phase 4: Synthesize CLAUDE.md improvements if existing CLAUDE.md provided
-        if claude_md_content and depth == AnalysisDepth.DEEP:
+        if claude_md_content:
             logger.info(f"Phase 4: Synthesizing CLAUDE.md improvements with {self.models['synthesizer']}...")
             synthesis = await self._synthesize_claude_md_improvements(
-                claude_md_content, results["summary_statistics"], results["deep_analyses"]
+                claude_md_content, results["summary_statistics"], results.get("deep_analyses", [])
             )
             results["claude_md_synthesis"] = synthesis
             logger.info("Generated CLAUDE.md improvement synthesis")
@@ -519,28 +545,22 @@ Return a comprehensive synthesis:
             
             # Parse JSON response
             content = response.content[0].text
-            # Extract JSON from response
-            json_start = content.find('{')
-            json_end = content.rfind('}') + 1
-            if json_start >= 0 and json_end > json_start:
-                json_str = content[json_start:json_end]
-                data = json.loads(json_str)
-                
-                # Ensure no None values in critical fields
-                return ConversationClassification(
-                    conversation_id=conv_file.conversation_id,
-                    user_intent=data.get('user_intent') or 'unknown',
-                    task_type=data.get('task_type') or 'unknown',
-                    complexity=data.get('complexity') or 'unknown',
-                    has_interventions=data.get('has_interventions', False),
-                    intervention_count=data.get('intervention_count', 0),
-                    task_completed=data.get('task_completed', False),
-                    success_level=data.get('success_level') or 'unknown',
-                    conversation_tone=data.get('conversation_tone') or 'unknown',
-                    notable_features=data.get('notable_features', [])
-                )
-            else:
-                raise ValueError("No JSON found in response")
+            # Parse JSON with robust error handling
+            data = self._parse_json_response(content, f"classification for {conv_file.conversation_id}")
+            
+            # Ensure no None values in critical fields
+            return ConversationClassification(
+                conversation_id=conv_file.conversation_id,
+                user_intent=data.get('user_intent') or 'unknown',
+                task_type=data.get('task_type') or 'unknown',
+                complexity=data.get('complexity') or 'unknown',
+                has_interventions=data.get('has_interventions', False),
+                intervention_count=data.get('intervention_count', 0),
+                task_completed=data.get('task_completed', False),
+                success_level=data.get('success_level') or 'unknown',
+                conversation_tone=data.get('conversation_tone') or 'unknown',
+                notable_features=data.get('notable_features', [])
+            )
                 
         except Exception as e:
             logger.error(f"Classification error: {e}")
@@ -729,16 +749,15 @@ Return a comprehensive synthesis:
                 logger.warning("No text content in analyzer response")
                 return None
             
-            json_start = content.find('{')
-            json_end = content.rfind('}') + 1
-            if json_start >= 0 and json_end > json_start:
-                data = json.loads(content[json_start:json_end])
+            # Parse JSON with robust error handling
+            try:
+                data = self._parse_json_response(content, "single intervention analysis")
                 
                 return InterventionAnalysis(
                     intervention=intervention,
                     **data
                 )
-            else:
+            except (ValueError, json.JSONDecodeError):
                 logger.warning("No valid JSON found in analyzer response")
                 return None
         except (IndexError, AttributeError, json.JSONDecodeError, TypeError, KeyError) as e:
@@ -800,11 +819,10 @@ Return a comprehensive synthesis:
                 logger.warning(f"No text content in response for conversation {conv_file.conversation_id}")
                 return None
             
-            json_start = content.find('{')
-            json_end = content.rfind('}') + 1
-            if json_start >= 0 and json_end > json_start:
-                data = json.loads(content[json_start:json_end])
-            else:
+            # Parse JSON with robust error handling
+            try:
+                data = self._parse_json_response(content, f"problematic conversation {conv_file.conversation_id}")
+            except (ValueError, json.JSONDecodeError):
                 logger.warning(f"No valid JSON in response for conversation {conv_file.conversation_id}")
                 return None
                 
@@ -879,16 +897,11 @@ Return a comprehensive synthesis:
             for intervention, response in zip(batch, responses):
                 try:
                     content = response.content[0].text
-                    json_start = content.find('{')
-                    json_end = content.rfind('}') + 1
-                    if json_start >= 0 and json_end > json_start:
-                        quality_data = json.loads(content[json_start:json_end])
-                        classified.append((intervention, quality_data))
-                    else:
-                        # Default to unknown quality
-                        classified.append((intervention, {"teaching_value": "medium"}))
-                except Exception as e:
+                    quality_data = self._parse_json_response(content, "intervention quality classification")
+                    classified.append((intervention, quality_data))
+                except (ValueError, json.JSONDecodeError, Exception) as e:
                     logger.error(f"Error classifying intervention quality: {e}")
+                    # Default to unknown quality
                     classified.append((intervention, {"teaching_value": "medium"}))
         
         return classified
@@ -972,33 +985,8 @@ Return a comprehensive synthesis:
             # Parse response
             content = response.content[0].text
             
-            # Try to extract JSON - look for the interventions array
-            try:
-                # First try to parse the whole response
-                data = json.loads(content)
-            except json.JSONDecodeError:
-                # Try to extract JSON from the response
-                json_start = content.find('{')
-                json_end = content.rfind('}') + 1
-                if json_start >= 0 and json_end > json_start:
-                    json_str = content[json_start:json_end]
-                    # Clean up common JSON issues
-                    json_str = json_str.replace('// ...', '')  # Remove comments
-                    json_str = re.sub(r'//.*$', '', json_str, flags=re.MULTILINE)  # Remove all comments
-                    json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)  # Remove trailing commas
-                    json_str = json_str.replace('...', '"..."')  # Fix ellipsis
-                    # Remove any text after the last closing brace
-                    last_brace = json_str.rfind('}')
-                    if last_brace > 0:
-                        json_str = json_str[:last_brace + 1]
-                    try:
-                        data = json.loads(json_str)
-                    except json.JSONDecodeError as e:
-                        logger.error(f"JSON parse error: {e}")
-                        logger.debug(f"Failed JSON: {json_str[:500]}...")
-                        raise
-                else:
-                    raise ValueError("No JSON found in response")
+            # Parse JSON with robust error handling
+            data = self._parse_json_response(content, f"intervention analysis for {conversation_id}")
             
             # Convert each intervention analysis
             analyses = []
@@ -1044,6 +1032,55 @@ Return a comprehensive synthesis:
         if text and len(text) > max_length:
             return text[:max_length] + "..."
         return text or ""
+    
+    def _parse_json_response(self, content: str, context: str = "") -> Dict[str, Any]:
+        """Parse JSON from LLM response with robust error handling.
+        
+        Args:
+            content: The raw response content from the LLM
+            context: Optional context for error messages (e.g., "Phase 3 deep analysis")
+            
+        Returns:
+            Parsed JSON data as a dictionary
+            
+        Raises:
+            ValueError: If no valid JSON can be extracted
+            json.JSONDecodeError: If JSON parsing fails after cleanup attempts
+        """
+        # First try to parse the whole response as JSON
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            # Try to extract JSON from the response
+            json_start = content.find('{')
+            json_end = content.rfind('}') + 1
+            
+            if json_start >= 0 and json_end > json_start:
+                json_str = content[json_start:json_end]
+                
+                # Clean up common JSON issues from LLM responses
+                # Remove single-line comments
+                json_str = re.sub(r'//.*$', '', json_str, flags=re.MULTILINE)
+                # Remove multi-line comments
+                json_str = re.sub(r'/\*.*?\*/', '', json_str, flags=re.DOTALL)
+                # Remove trailing commas before closing braces/brackets
+                json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
+                # Fix bare ellipsis (convert ... to "...")
+                json_str = re.sub(r'(?<!")\.\.\.(?!")', '"..."', json_str)
+                # Remove any text after the last closing brace
+                last_brace = json_str.rfind('}')
+                if last_brace > 0:
+                    json_str = json_str[:last_brace + 1]
+                
+                try:
+                    return json.loads(json_str)
+                except json.JSONDecodeError as e:
+                    error_context = f" in {context}" if context else ""
+                    logger.error(f"JSON parse error{error_context}: {e}")
+                    logger.debug(f"Failed JSON (first 500 chars): {json_str[:500]}...")
+                    raise
+            else:
+                raise ValueError(f"No JSON found in response{' for ' + context if context else ''}")
     
     def _extract_text_content(self, content: Any) -> Optional[str]:
         """Extract text from various content formats."""
@@ -1204,27 +1241,22 @@ Return a comprehensive synthesis:
         )
         
         response = await self.async_client.messages.create(
-            model=self.models["synthesizer"],
+            model=self.models["deep_analyzer"],
             max_tokens=2000,
             temperature=0,
             messages=[{"role": "user", "content": prompt}]
         )
         
-        # Parse response
+        # Parse response with robust error handling
         content = response.content[0].text
-        json_start = content.find('{')
-        json_end = content.rfind('}') + 1
-        if json_start >= 0 and json_end > json_start:
-            data = json.loads(content[json_start:json_end])
-            
-            return DeepConversationAnalysis(
-                conversation_id=conv_file.conversation_id,
-                classification=classification,
-                intervention_analyses=intervention_analyses,
-                **data
-            )
-        else:
-            raise ValueError("No JSON found in response")
+        data = self._parse_json_response(content, f"deep analysis for {conv_file.conversation_id}")
+        
+        return DeepConversationAnalysis(
+            conversation_id=conv_file.conversation_id,
+            classification=classification,
+            intervention_analyses=intervention_analyses,
+            **data
+        )
     
     def _format_conversation_for_analysis(self, messages: List[Message]) -> str:
         """Format conversation for analysis."""
@@ -1273,11 +1305,23 @@ Return a comprehensive synthesis:
         common_issues = {}
         common_recommendations = {}
         
+        # Filter out analysis-specific recommendations
+        analysis_specific_terms = [
+            'conversation log', 'truncat', 'complete conversation', 
+            'full transcript', 'analysis context', 'conversation ended',
+            'show complete', 'ensure complete', 'full context'
+        ]
+        
         for da in deep_analyses:
             for issue in da.systemic_issues:
                 common_issues[issue] = common_issues.get(issue, 0) + 1
             for rec in da.recommendations:
-                common_recommendations[rec] = common_recommendations.get(rec, 0) + 1
+                # Filter out recommendations that are specific to the analysis
+                rec_lower = rec.lower()
+                if not any(term in rec_lower for term in analysis_specific_terms):
+                    common_recommendations[rec] = common_recommendations.get(rec, 0) + 1
+                else:
+                    logger.debug(f"Filtered out analysis-specific recommendation: {rec}")
         
         return {
             "total_conversations": total_conversations,
@@ -1332,14 +1376,12 @@ Return a comprehensive synthesis:
                 messages=[{"role": "user", "content": prompt}]
             )
             
-            # Parse JSON response
+            # Parse JSON response with robust error handling
             content = response.content[0].text
-            json_start = content.find('{')
-            json_end = content.rfind('}') + 1
-            if json_start >= 0 and json_end > json_start:
-                return json.loads(content[json_start:json_end])
-            else:
-                logger.error("No JSON found in synthesis response")
+            try:
+                return self._parse_json_response(content, "CLAUDE.md synthesis")
+            except (ValueError, json.JSONDecodeError) as e:
+                logger.error(f"Failed to parse synthesis response: {e}")
                 return {}
                 
         except Exception as e:

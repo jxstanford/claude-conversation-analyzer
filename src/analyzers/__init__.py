@@ -2,7 +2,6 @@
 
 from .llm_analyzer import (
     LLMAnalyzer,
-    AnalysisDepth,
     ConversationClassification,
     InterventionAnalysis,
     DeepConversationAnalysis
@@ -10,7 +9,6 @@ from .llm_analyzer import (
 
 __all__ = [
     'LLMAnalyzer',
-    'AnalysisDepth',
     'ConversationClassification',
     'InterventionAnalysis',
     'DeepConversationAnalysis'

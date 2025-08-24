@@ -91,9 +91,10 @@ The analyzer uses a hierarchical configuration system:
 
 Key environment variables:
 - `ANTHROPIC_API_KEY` (required)
-- `CLAUDE_CLASSIFIER_MODEL` (default: claude-3-5-haiku-20241022)
-- `CLAUDE_ANALYZER_MODEL` (default: claude-sonnet-4-20250514)
-- `CLAUDE_SYNTHESIZER_MODEL` (default: claude-opus-4-1-20250805)
+- `CLAUDE_CLASSIFIER_MODEL` (default: claude-3-5-haiku-20241022) - Phase 1 Classification
+- `CLAUDE_ANALYZER_MODEL` (default: claude-sonnet-4-20250514) - Phase 2 Intervention Analysis
+- `CLAUDE_DEEP_ANALYZER_MODEL` (default: claude-opus-4-1-20250805) - Phase 3 Deep Analysis
+- `CLAUDE_SYNTHESIZER_MODEL` (default: claude-opus-4-1-20250805) - Phase 4 CLAUDE.md Synthesis
 - `LOG_LEVEL` (default: INFO)
 
 ## Key Features

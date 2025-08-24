@@ -73,12 +73,13 @@ class CostEstimator:
         
         Args:
             models: Dictionary mapping role to model ID
-                   (classifier, analyzer, synthesizer)
+                   (classifier, analyzer, deep_analyzer, synthesizer)
         """
         # Default models
         default_models = {
             'classifier': 'claude-3-5-haiku-latest',
             'analyzer': 'claude-3-5-sonnet-latest',
+            'deep_analyzer': 'claude-3-opus-latest',
             'synthesizer': 'claude-3-opus-latest'
         }
         
@@ -188,18 +189,18 @@ class CostEstimator:
         # Phase 3: Deep Analysis (Opus) - Top 10% most problematic
         deep_conversations = max(5, int(intervention_conversations * 0.33)) if intervention_conversations > 0 else 0  # ~10% of total
         
-        synthesizer_model = self.models.get('synthesizer', 'claude-3-opus-latest')
-        synthesizer_pricing = CLAUDE_PRICING.get(synthesizer_model,
-                                                CLAUDE_PRICING['claude-3-opus-latest'])
+        deep_analyzer_model = self.models.get('deep_analyzer', 'claude-3-opus-latest')
+        deep_analyzer_pricing = CLAUDE_PRICING.get(deep_analyzer_model,
+                                                  CLAUDE_PRICING['claude-3-opus-latest'])
         
         # Estimate: Full conversation content + context
         phase3_input_tokens = deep_conversations * 5000  # Full conversations
         phase3_output_tokens = deep_conversations * 1000  # Detailed analysis
         phase3_cost = self.calculate_cost(phase3_input_tokens, phase3_output_tokens,
-                                         synthesizer_pricing)
+                                         deep_analyzer_pricing)
         
         estimates['deep_analysis'] = {
-            'model': synthesizer_pricing.name,
+            'model': deep_analyzer_pricing.name,
             'conversations': deep_conversations,
             'input_tokens': phase3_input_tokens,
             'output_tokens': phase3_output_tokens,
@@ -209,6 +210,10 @@ class CostEstimator:
         
         # Phase 4: CLAUDE.md Synthesis (Opus) - If CLAUDE.md exists
         if claude_md_content:
+            synthesizer_model = self.models.get('synthesizer', 'claude-3-opus-latest')
+            synthesizer_pricing = CLAUDE_PRICING.get(synthesizer_model,
+                                                    CLAUDE_PRICING['claude-3-opus-latest'])
+            
             claude_md_tokens = self.count_tokens(claude_md_content)
             # Add summaries and patterns from analysis
             synthesis_input_tokens = claude_md_tokens + 10000  # CLAUDE.md + analysis summaries
@@ -337,6 +342,7 @@ class CostEstimator:
             "Model Configuration:",
             f"  Classifier: {self.models.get('classifier', 'default')}",
             f"  Analyzer: {self.models.get('analyzer', 'default')}",
+            f"  Deep Analyzer: {self.models.get('deep_analyzer', 'default')}",
             f"  Synthesizer: {self.models.get('synthesizer', 'default')}",
             "=" * 50
         ])

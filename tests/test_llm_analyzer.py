@@ -231,6 +231,63 @@ class TestLLMAnalyzer:
         not_truncated = mock_analyzer._truncate_message(short_message, max_length=100)
         assert not_truncated == short_message
     
+    def test_parse_json_response_with_comments(self, mock_analyzer):
+        """Test JSON parsing with comments."""
+        # Test with single-line comments
+        content = '''Here's the response:
+        {
+            "test": "value", // This is a comment
+            "number": 42,
+            // Another comment
+            "list": [1, 2, 3]
+        }'''
+        
+        result = mock_analyzer._parse_json_response(content)
+        assert result["test"] == "value"
+        assert result["number"] == 42
+        assert result["list"] == [1, 2, 3]
+    
+    def test_parse_json_response_with_trailing_commas(self, mock_analyzer):
+        """Test JSON parsing with trailing commas."""
+        content = '''{
+            "test": "value",
+            "number": 42,
+            "list": [1, 2, 3,],
+        }'''
+        
+        result = mock_analyzer._parse_json_response(content)
+        assert result["test"] == "value"
+        assert result["number"] == 42
+        assert result["list"] == [1, 2, 3]
+    
+    def test_parse_json_response_with_ellipsis(self, mock_analyzer):
+        """Test JSON parsing with ellipsis."""
+        content = '''{
+            "test": "value",
+            "truncated": ...,
+            "number": 42
+        }'''
+        
+        result = mock_analyzer._parse_json_response(content)
+        assert result["test"] == "value"
+        assert result["truncated"] == "..."
+        assert result["number"] == 42
+    
+    def test_parse_json_response_direct_json(self, mock_analyzer):
+        """Test JSON parsing with direct valid JSON."""
+        content = '{"test": "value", "number": 42}'
+        
+        result = mock_analyzer._parse_json_response(content)
+        assert result["test"] == "value"
+        assert result["number"] == 42
+    
+    def test_parse_json_response_no_json(self, mock_analyzer):
+        """Test JSON parsing with no JSON content."""
+        content = "This is just text with no JSON"
+        
+        with pytest.raises(ValueError, match="No JSON found"):
+            mock_analyzer._parse_json_response(content, "test context")
+    
 
 
 class TestInterventionFiltering:

@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 
 from src.conversation_scanner import ConversationScanner
 # ClaudeMdParser no longer needed - we just pass raw CLAUDE.md content
-from src.analyzers import LLMAnalyzer, AnalysisDepth
+from src.analyzers import LLMAnalyzer
 from src.generators import ReportGenerator
 from src.detectors import InterventionDetector
 from src.processing_tracker import ProcessingTracker
@@ -309,6 +309,8 @@ async def analyze_conversations(
         models['classifier'] = os.getenv('CLAUDE_CLASSIFIER_MODEL')
     if os.getenv('CLAUDE_ANALYZER_MODEL'):
         models['analyzer'] = os.getenv('CLAUDE_ANALYZER_MODEL')
+    if os.getenv('CLAUDE_DEEP_ANALYZER_MODEL'):
+        models['deep_analyzer'] = os.getenv('CLAUDE_DEEP_ANALYZER_MODEL')
     if os.getenv('CLAUDE_SYNTHESIZER_MODEL'):
         models['synthesizer'] = os.getenv('CLAUDE_SYNTHESIZER_MODEL')
     
@@ -353,7 +355,6 @@ async def analyze_conversations(
         analysis_results = await analyzer.analyze_conversations(
             conversations=conversations_with_messages,
             claude_md_content=claude_md_content,  # Pass raw CLAUDE.md content
-            depth=AnalysisDepth.DEEP,
             tracker=tracker,
             force_all=process_all
         )
@@ -437,7 +438,8 @@ async def analyze_conversations(
     metadata["completed_at"] = datetime.now().isoformat()
     metadata["conversations_analyzed"] = len(successfully_analyzed)
     metadata["success_rate"] = stats.get('success_rate', 0) if stats else 0
-    metadata["generated_files"] = generated_files
+    # Convert Path objects to strings for JSON serialization
+    metadata["generated_files"] = {k: str(v) for k, v in generated_files.items()}
     
     with open(metadata_file, 'w') as f:
         json.dump(metadata, f, indent=2)

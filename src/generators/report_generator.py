@@ -6,9 +6,6 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from jinja2 import Environment, FileSystemLoader, select_autoescape
-import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
 import pandas as pd
 
 from ..analyzers import (
@@ -17,6 +14,7 @@ from ..analyzers import (
     DeepConversationAnalysis
 )
 # ClaudeMdStructure no longer needed - simplified to use raw content
+from .modern_dashboard import generate_modern_dashboard
 
 logger = logging.getLogger(__name__)
 
@@ -543,116 +541,12 @@ These rules have proven effective and should remain unchanged:
     
     def generate_dashboard(self, analysis_results: Dict[str, Any]) -> Path:
         """Generate interactive HTML dashboard."""
-        stats = analysis_results.get('summary_statistics', {})
+        # Add timestamp if not present
+        if 'timestamp' not in analysis_results:
+            analysis_results['timestamp'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
-        # Create figure with subplots
-        fig = make_subplots(
-            rows=2, cols=2,
-            subplot_titles=('Task Intent Distribution', 'Success Levels', 
-                          'Intervention Categories', 'Conversation Tone'),
-            specs=[[{'type': 'pie'}, {'type': 'bar'}],
-                   [{'type': 'bar'}, {'type': 'bar'}]]
-        )
-        
-        # Intent distribution pie chart
-        intent_dist = stats.get('intent_distribution', {})
-        if intent_dist:
-            fig.add_trace(
-                go.Pie(labels=list(intent_dist.keys()), values=list(intent_dist.values())),
-                row=1, col=1
-            )
-        
-        # Success levels bar chart
-        success_dist = stats.get('success_distribution', {})
-        if success_dist:
-            fig.add_trace(
-                go.Bar(x=list(success_dist.keys()), y=list(success_dist.values()),
-                      marker_color=['green', 'orange', 'red']),
-                row=1, col=2
-            )
-        
-        # Intervention categories
-        intervention_cats = stats.get('intervention_categories', {})
-        if intervention_cats:
-            cats = list(intervention_cats.keys())
-            counts = list(intervention_cats.values())
-            fig.add_trace(
-                go.Bar(x=cats, y=counts, marker_color='lightblue'),
-                row=2, col=1
-            )
-        
-        # Conversation tone
-        tone_dist = stats.get('tone_distribution', {})
-        if tone_dist:
-            fig.add_trace(
-                go.Bar(x=list(tone_dist.keys()), y=list(tone_dist.values()),
-                      marker_color=['green', 'yellow', 'red']),
-                row=2, col=2
-            )
-        
-        # Update layout
-        fig.update_layout(
-            title_text="Claude Conversation Analysis Dashboard",
-            showlegend=False,
-            height=800
-        )
-        
-        # Generate HTML
-        html_content = f"""
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Claude Conversation Analysis</title>
-    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-    <style>
-        body {{ font-family: Arial, sans-serif; margin: 20px; }}
-        .metric {{ display: inline-block; margin: 20px; padding: 20px; background: #f0f0f0; border-radius: 5px; }}
-        .metric h3 {{ margin: 0; color: #333; }}
-        .metric .value {{ font-size: 2em; font-weight: bold; color: #0066cc; }}
-    </style>
-</head>
-<body>
-    <h1>Claude Conversation Analysis Dashboard</h1>
-    
-    <div class="metrics">
-        <div class="metric">
-            <h3>Total Conversations</h3>
-            <div class="value">{stats.get('total_conversations', 0)}</div>
-        </div>
-        <div class="metric">
-            <h3>Success Rate</h3>
-            <div class="value">{stats.get('success_rate', 0) * 100:.1f}%</div>
-        </div>
-        <div class="metric">
-            <h3>Interventions</h3>
-            <div class="value">{stats.get('total_interventions', 0)}</div>
-        </div>
-    </div>
-    
-    <div id="plotly-div"></div>
-    
-    <script>
-        var data = {fig.to_json()};
-        Plotly.newPlot('plotly-div', data.data, data.layout);
-    </script>
-    
-    <h2>Top Issues</h2>
-    <ol>
-"""
-        
-        # Add top issues
-        for issue, count in stats.get('top_systemic_issues', [])[:10]:
-            html_content += f"        <li>{issue} (found {count} times)</li>\n"
-        
-        html_content += """    </ol>
-</body>
-</html>
-"""
-        
-        # Save dashboard
-        dashboard_path = self.output_dir / "dashboard.html"
-        dashboard_path.write_text(html_content)
-        return dashboard_path
+        # Use the modern dashboard generator
+        return generate_modern_dashboard(self.output_dir, analysis_results)
     
     def save_raw_data(self, analysis_results: Dict[str, Any]) -> Path:
         """Save raw analysis data as JSON."""
@@ -682,6 +576,16 @@ These rules have proven effective and should remain unchanged:
                     'prevention_rule': ia.prevention_rule
                 }
                 for ia in analysis_results.get('intervention_analyses', [])
+            ],
+            'deep_analyses': [
+                {
+                    'conversation_id': da.conversation_id,
+                    'patterns_identified': da.patterns_identified,
+                    'systemic_issues': da.systemic_issues,
+                    'successful_patterns': da.successful_patterns,
+                    'claude_md_recommendations': da.claude_md_recommendations
+                }
+                for da in analysis_results.get('deep_analyses', [])
             ]
         }
         
