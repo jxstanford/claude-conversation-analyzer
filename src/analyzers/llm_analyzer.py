@@ -327,7 +327,6 @@ Return a comprehensive synthesis:
     
     async def analyze_conversations(self,
                                   conversations: List[Tuple[ConversationFile, List[Message]]],
-                                  claude_md: Optional[Any] = None,  # Deprecated, kept for backward compatibility
                                   claude_md_content: Optional[str] = None,  # Raw CLAUDE.md content
                                   depth: AnalysisDepth = AnalysisDepth.STANDARD,
                                   tracker: Optional['ProcessingTracker'] = None,
@@ -378,7 +377,7 @@ Return a comprehensive synthesis:
         if depth == AnalysisDepth.DEEP and problematic_conversations:
             logger.info(f"Phase 3: Deep analysis with {self.models['synthesizer']}...")
             deep_analyses = await self._deep_analyze_conversations(
-                problematic_conversations, classifications, intervention_analyses, claude_md, tracker, force_all
+                problematic_conversations, classifications, intervention_analyses, claude_md_content, tracker, force_all
             )
             results["deep_analyses"] = deep_analyses
             logger.info(f"Generated {len(deep_analyses)} deep conversation analyses")
@@ -401,10 +400,10 @@ Return a comprehensive synthesis:
                 )
         
         # Phase 4: Synthesize CLAUDE.md improvements if existing CLAUDE.md provided
-        if (claude_md or claude_md_content) and depth == AnalysisDepth.DEEP:
+        if claude_md_content and depth == AnalysisDepth.DEEP:
             logger.info(f"Phase 4: Synthesizing CLAUDE.md improvements with {self.models['synthesizer']}...")
             synthesis = await self._synthesize_claude_md_improvements(
-                claude_md, claude_md_content, results["summary_statistics"], results["deep_analyses"]
+                claude_md_content, results["summary_statistics"], results["deep_analyses"]
             )
             results["claude_md_synthesis"] = synthesis
             logger.info("Generated CLAUDE.md improvement synthesis")
@@ -1066,7 +1065,7 @@ Return a comprehensive synthesis:
                                         sample_conversations: List[Tuple[ConversationFile, List[Message]]],
                                         classifications: List[ConversationClassification],
                                         intervention_analyses: List[InterventionAnalysis],
-                                        claude_md: Optional[Any],  # Deprecated
+                                        claude_md_content: Optional[str] = None,  # Raw CLAUDE.md content
                                         tracker: Optional['ProcessingTracker'] = None,
                                         force_all: bool = False) -> List[DeepConversationAnalysis]:
         """Perform deep analysis using Opus with state tracking."""
@@ -1135,7 +1134,7 @@ Return a comprehensive synthesis:
                     
                     # Create task for deep analysis
                     task = self._deep_analyze_single_conversation(
-                        conv_file, messages, classification, conv_interventions, claude_md
+                        conv_file, messages, classification, conv_interventions, claude_md_content
                     )
                     batch_tasks.append(task)
                     batch_conv_files.append(conv_file)
@@ -1180,7 +1179,7 @@ Return a comprehensive synthesis:
                                               messages: List[Message],
                                               classification: ConversationClassification,
                                               intervention_analyses: List[InterventionAnalysis],
-                                              claude_md: Optional[Any]) -> DeepConversationAnalysis:  # Deprecated param
+                                              claude_md_content: Optional[str] = None) -> DeepConversationAnalysis:
         """Deep analyze a single conversation."""
         # Format conversation
         conversation_text = self._format_conversation_for_analysis(messages)
@@ -1296,7 +1295,6 @@ Return a comprehensive synthesis:
         }
     
     async def _synthesize_claude_md_improvements(self,
-                                                claude_md: Optional[Any],  # Deprecated
                                                 claude_md_content: Optional[str],
                                                 summary_stats: Dict[str, Any],
                                                 deep_analyses: List[DeepConversationAnalysis]) -> Dict[str, Any]:

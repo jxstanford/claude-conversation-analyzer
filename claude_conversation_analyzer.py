@@ -352,8 +352,7 @@ async def analyze_conversations(
     with console.status("[bold green]Analyzing conversations with Claude..."):
         analysis_results = await analyzer.analyze_conversations(
             conversations=conversations_with_messages,
-            claude_md=None,  # No longer passing structured rules
-            claude_md_content=claude_md_content,  # Just pass raw content
+            claude_md_content=claude_md_content,  # Pass raw CLAUDE.md content
             depth=AnalysisDepth.DEEP,
             tracker=tracker,
             force_all=process_all
@@ -364,14 +363,13 @@ async def analyze_conversations(
     
     report_generator = ReportGenerator(output_dir=output_dir)
     generated_files = report_generator.generate_all_reports(
-        analysis_results=analysis_results,
-        claude_md=claude_md_structure
+        analysis_results=analysis_results
     )
     
     # Display results based on whether existing CLAUDE.md was found
     stats = analysis_results.get('summary_statistics', {})
     
-    if not claude_md_structure:
+    if not claude_md_content:
         # No existing CLAUDE.md - generated a new one
         console.print(f"[green]Generated new CLAUDE.md with insights from {stats.get('total_conversations', 0)} conversations[/green]")
     else:
@@ -407,7 +405,7 @@ async def analyze_conversations(
     console.print(f"\n[green]View the full analysis at:[/green] [blue]{Path(output_dir).absolute()}[/blue]")
     
     # Show diff commands if CLAUDE.md analysis was generated
-    if claude_md_structure and 'diff_analysis' in generated_files:
+    if claude_md_content and 'diff_analysis' in generated_files:
         console.print("\n[bold]To review CLAUDE.md changes:[/bold]")
         
         # Determine the original CLAUDE.md path

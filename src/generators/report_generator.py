@@ -42,8 +42,7 @@ class ReportGenerator:
         )
     
     def generate_all_reports(self, 
-                           analysis_results: Dict[str, Any],
-                           claude_md: Optional[Any] = None) -> Dict[str, Path]:  # Deprecated param
+                           analysis_results: Dict[str, Any]) -> Dict[str, Path]:
         """Generate all report types."""
         logger.info(f"Generating reports in {self.output_dir}")
         generated_files = {}
@@ -71,35 +70,13 @@ class ReportGenerator:
         else:
             logger.info("No interventions found - skipping intervention analysis")
         
-        # Generate CLAUDE.md diff analysis if existing CLAUDE.md
-        if claude_md:
-            logger.info("Generating CLAUDE.md diff analysis...")
-            diff_path = self.generate_claude_md_diff_analysis(
-                analysis_results, claude_md
-            )
-            generated_files['diff_analysis'] = diff_path
-            
-            # Generate proposed CLAUDE.md
-            proposed_path = self.generate_proposed_claude_md(
-                analysis_results, claude_md
-            )
-            generated_files['proposed_claude_md'] = proposed_path
-            
-            # Generate patch file
-            patch_path = self.generate_claude_md_patch(
-                claude_md, proposed_path
-            )
-            if patch_path:
-                generated_files['patch'] = patch_path
-            
-            logger.debug(f"CLAUDE.md diff analysis saved to: {diff_path}")
-        else:
-            # No existing CLAUDE.md - generate complete new one
-            logger.info("Generating new CLAUDE.md from analysis...")
-            new_claude_md_path = self.output_dir / "CLAUDE.md.proposed"
-            claude_md_content = self.generate_claude_md_from_analysis(analysis_results)
-            new_claude_md_path.write_text(claude_md_content)
-            generated_files['proposed_claude_md'] = new_claude_md_path
+        # Generate CLAUDE.md from analysis insights
+        # The LLM-based synthesis now handles improvements if existing CLAUDE.md was provided
+        logger.info("Generating CLAUDE.md from analysis...")
+        new_claude_md_path = self.output_dir / "CLAUDE.md.proposed"
+        claude_md_content = self.generate_claude_md_from_analysis(analysis_results)
+        new_claude_md_path.write_text(claude_md_content)
+        generated_files['proposed_claude_md'] = new_claude_md_path
         
         # Generate interactive dashboard
         logger.info("Generating interactive dashboard...")
