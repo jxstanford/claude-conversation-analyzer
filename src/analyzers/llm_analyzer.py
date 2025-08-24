@@ -718,19 +718,32 @@ Return a comprehensive synthesis:
             messages=[{"role": "user", "content": prompt}]
         )
         
-        # Parse response
-        content = response.content[0].text
-        json_start = content.find('{')
-        json_end = content.rfind('}') + 1
-        if json_start >= 0 and json_end > json_start:
-            data = json.loads(content[json_start:json_end])
+        # Parse response safely
+        try:
+            if not response.content or len(response.content) == 0:
+                logger.warning("Empty response from analyzer")
+                return None
             
-            return InterventionAnalysis(
-                intervention=intervention,
-                **data
-            )
-        else:
-            raise ValueError("No JSON found in response")
+            content = response.content[0].text
+            if not content:
+                logger.warning("No text content in analyzer response")
+                return None
+            
+            json_start = content.find('{')
+            json_end = content.rfind('}') + 1
+            if json_start >= 0 and json_end > json_start:
+                data = json.loads(content[json_start:json_end])
+                
+                return InterventionAnalysis(
+                    intervention=intervention,
+                    **data
+                )
+            else:
+                logger.warning("No valid JSON found in analyzer response")
+                return None
+        except (IndexError, AttributeError, json.JSONDecodeError, TypeError, KeyError) as e:
+            logger.error(f"Failed to parse analyzer response: {e}")
+            return None
     
     async def _analyze_problematic_conversation(self,
                                               conv_file: ConversationFile,
@@ -776,13 +789,25 @@ Return a comprehensive synthesis:
             messages=[{"role": "user", "content": prompt}]
         )
         
-        # Parse response
-        content = response.content[0].text
-        json_start = content.find('{')
-        json_end = content.rfind('}') + 1
-        if json_start >= 0 and json_end > json_start:
-            data = json.loads(content[json_start:json_end])
+        # Parse response safely
+        try:
+            if not response.content or len(response.content) == 0:
+                logger.warning(f"Empty response for conversation {conv_file.conversation_id}")
+                return None
             
+            content = response.content[0].text
+            if not content:
+                logger.warning(f"No text content in response for conversation {conv_file.conversation_id}")
+                return None
+            
+            json_start = content.find('{')
+            json_end = content.rfind('}') + 1
+            if json_start >= 0 and json_end > json_start:
+                data = json.loads(content[json_start:json_end])
+            else:
+                logger.warning(f"No valid JSON in response for conversation {conv_file.conversation_id}")
+                return None
+                
             # Create a pseudo-intervention for the whole conversation
             from ..detectors import Intervention, InterventionType, InterventionDetector
             pseudo_intervention = Intervention(
@@ -797,6 +822,9 @@ Return a comprehensive synthesis:
                 intervention=pseudo_intervention,
                 **data
             )
+        except (IndexError, AttributeError, json.JSONDecodeError, TypeError, KeyError) as e:
+            logger.error(f"Failed to parse response for {conv_file.conversation_id}: {e}")
+            return None
         
         return None
     
@@ -873,12 +901,14 @@ Return a comprehensive synthesis:
         # First, filter out obviously low-quality interventions
         detector = InterventionDetector()
         potentially_valuable = []
+        removed_count = 0
         
         for intervention in interventions:
             if not detector.is_obviously_low_quality(intervention):
                 potentially_valuable.append(intervention)
             else:
-                logger.debug(f"Skipping obviously low-quality intervention: {intervention.type.value}")
+                removed_count += 1
+                logger.debug(f"Skipping obviously low-quality intervention: {intervention.type.value} - '{intervention.user_message[:50]}...'")
         
         # If we still have too many, we'll need to classify them
         if len(potentially_valuable) > 15:
@@ -900,7 +930,11 @@ Return a comprehensive synthesis:
         # Log filtering results
         if len(interventions) > len(interventions_to_analyze):
             logger.info(f"Filtered interventions: {len(interventions)} -> {len(potentially_valuable)} -> {len(interventions_to_analyze)}")
-            logger.info(f"Removed {len(interventions) - len(potentially_valuable)} obviously low-quality interventions")
+            logger.info(f"Removed {removed_count} obviously low-quality interventions")
+            if removed_count == 0 and len(interventions) > 5:
+                # Log a sample of interventions to understand why nothing was filtered
+                logger.debug(f"Sample intervention types: {[i.type.value for i in interventions[:3]]}")
+                logger.debug(f"Sample intervention messages: {[i.user_message[:30] for i in interventions[:3]]}")
         
         # Format interventions list
         interventions_list = ""

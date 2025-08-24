@@ -84,14 +84,19 @@ class InterventionDetector:
             r"^\s*\d+→",  # Line numbers at start
             r"^\s*===+\s*test session starts\s*===+",  # Test output
             r"^\[\{.*'type':\s*'text'.*\}\]$",  # JSON-like structures
+            r"^\[!\].*Using tool",  # Tool usage notifications
+            r"^<function_calls>",  # Function call markers
+            r"^🎯.*Planning task:",  # Planning markers
+            r"^System:",  # System messages
         ]
         
-        # Truncation indicators
+        # Truncation indicators - be conservative to avoid false positives
         self.truncation_indicators = [
             r'\.\.\.$',  # Ends with ellipsis
-            r'[^.!?]\s*$',  # Doesn't end with proper punctuation (but allow for code/commands)
-            r'"$',  # Ends with unclosed quote
-            r'\($',  # Ends with unclosed parenthesis
+            r'\.\.\.[\s\'"]*$',  # Ends with ellipsis and maybe quotes
+            r'^\s*\.\.\.',  # Starts with ellipsis (continuation)
+            r'<truncated>',  # Explicit truncation marker
+            r'output truncated',  # Common truncation message
             r':\s*$',  # Ends with colon (often before missing content)
         ]
         
@@ -143,12 +148,7 @@ class InterventionDetector:
             if not content:
                 continue
             
-            # Skip low-quality messages
-            if self._is_low_quality_message(content):
-                logger.debug(f"Skipping low-quality message at index {i}")
-                continue
-            
-            # Check for intervention patterns
+            # Check for intervention patterns (no filtering here - all filtering happens later)
             for intervention_type, patterns in self.intervention_patterns.items():
                 for pattern in patterns:
                     if re.search(pattern, content, re.IGNORECASE):
@@ -224,58 +224,60 @@ class InterventionDetector:
         
         return "medium"
     
-    def _is_low_quality_message(self, content: str) -> bool:
-        """Check if a message is low quality (truncated, system-generated, etc)."""
-        # Check if it's a system-generated message
+    
+    def is_obviously_low_quality(self, intervention: Intervention) -> bool:
+        """Quick check for obviously low-quality interventions that we can skip without LLM.
+        
+        This is the single place where all filtering decisions are made.
+        """
+        content = intervention.user_message
+        content_lower = content.lower()
+        content_stripped = content.strip()
+        
+        # 1. Check for system-generated messages
         for pattern in self.system_message_patterns:
             if re.search(pattern, content, re.IGNORECASE | re.MULTILINE):
                 return True
         
-        # Skip very short messages (likely incomplete)
-        if len(content.strip()) < 10:
+        # 2. Skip very short messages (likely incomplete or just signals)
+        if len(content_stripped) < 10:
             return True
         
-        # Check for truncation indicators (but be careful with code)
+        # 3. Check for truncation indicators (but be careful with code)
         # Only apply truncation check if message is short and looks incomplete
         if len(content) < 100:
             for pattern in self.truncation_indicators:
-                if re.search(pattern, content.strip()):
+                if re.search(pattern, content_stripped):
                     # Exception for code blocks or commands
                     if not any(indicator in content for indicator in ['```', '$(', 'function', 'def', 'class']):
                         return True
         
-        return False
-    
-    def is_obviously_low_quality(self, intervention: Intervention) -> bool:
-        """Quick check for obviously low-quality interventions that we can skip without LLM."""
-        content_lower = intervention.user_message.lower()
-        
-        # Very short messages that are just stop signals
-        if len(content_lower.strip()) < 20:
+        # 4. Very short messages that are just stop signals
+        if len(content_stripped) < 20:
             if any(word in content_lower for word in ['stop', 'wait', 'no', 'hold on']):
                 return True
         
-        # User explicitly taking over to run something themselves
-        takeover_phrases = [
-            r'i\'ll (do|run|handle) (it|that) myself',
-            r'let me (do|run) (it|that)',
-            r'i want to see the output',
-            r'run.*in.*terminal',
-            r'i\'ll take it from here',
-        ]
-        for phrase in takeover_phrases:
-            if re.search(phrase, content_lower):
-                return True
+        # 5. User explicitly taking over to run something themselves (without explanation)
+        # Only filter short takeover messages without additional context
+        if len(content_stripped) < 30:  # Short messages only
+            takeover_phrases = [
+                r'i\'ll (do|run|handle) (it|that) myself',
+                r'let me (do|run) (it|that)$',  # Must end with "that" or "it"
+                r'i want to see the output',
+                r'run.*in.*terminal',
+                r'i\'ll take it from here',
+            ]
+            for phrase in takeover_phrases:
+                if re.search(phrase, content_lower):
+                    return True
         
-        # Check for system messages (regardless of intervention type)
-        for pattern in self.system_message_patterns:
-            if re.search(pattern, intervention.user_message, re.IGNORECASE):
-                return True
-        
-        # Pure tool cancellations without explanation
+        # 6. Pure tool cancellations without explanation
         if intervention.type == InterventionType.TOOL_REJECTION:
             # If the message is just about canceling a tool without teaching
-            if len(content_lower) < 50 and 'instead' not in content_lower and 'should' not in content_lower:
+            # Don't filter if it contains guidance words
+            guidance_words = ['instead', 'should', 'rather', 'better', 'prefer', 'approach']
+            has_guidance = any(word in content_lower for word in guidance_words)
+            if len(content_stripped) < 30 and not has_guidance:
                 return True
         
         return False
