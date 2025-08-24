@@ -76,6 +76,25 @@ class InterventionDetector:
     """Detects user interventions in conversations."""
     
     def __init__(self):
+        # System-generated message patterns to filter out
+        self.system_message_patterns = [
+            r"The user doesn't want to proceed with this tool use",
+            r"Tool use was rejected.*STOP what you are doing",
+            r"\[Request interrupted by user\]",
+            r"^\s*\d+→",  # Line numbers at start
+            r"^\s*===+\s*test session starts\s*===+",  # Test output
+            r"^\[\{.*'type':\s*'text'.*\}\]$",  # JSON-like structures
+        ]
+        
+        # Truncation indicators
+        self.truncation_indicators = [
+            r'\.\.\.$',  # Ends with ellipsis
+            r'[^.!?]\s*$',  # Doesn't end with proper punctuation (but allow for code/commands)
+            r'"$',  # Ends with unclosed quote
+            r'\($',  # Ends with unclosed parenthesis
+            r':\s*$',  # Ends with colon (often before missing content)
+        ]
+        
         self.intervention_patterns = {
             InterventionType.STOP_ACTION: [
                 r'\b(stop|wait|hold on|pause)\b',
@@ -122,6 +141,11 @@ class InterventionDetector:
             
             content = self._extract_text_content(message.content)
             if not content:
+                continue
+            
+            # Skip low-quality messages
+            if self._is_low_quality_message(content):
+                logger.debug(f"Skipping low-quality message at index {i}")
                 continue
             
             # Check for intervention patterns
@@ -199,6 +223,62 @@ class InterventionDetector:
             return "low"
         
         return "medium"
+    
+    def _is_low_quality_message(self, content: str) -> bool:
+        """Check if a message is low quality (truncated, system-generated, etc)."""
+        # Check if it's a system-generated message
+        for pattern in self.system_message_patterns:
+            if re.search(pattern, content, re.IGNORECASE | re.MULTILINE):
+                return True
+        
+        # Skip very short messages (likely incomplete)
+        if len(content.strip()) < 10:
+            return True
+        
+        # Check for truncation indicators (but be careful with code)
+        # Only apply truncation check if message is short and looks incomplete
+        if len(content) < 100:
+            for pattern in self.truncation_indicators:
+                if re.search(pattern, content.strip()):
+                    # Exception for code blocks or commands
+                    if not any(indicator in content for indicator in ['```', '$(', 'function', 'def', 'class']):
+                        return True
+        
+        return False
+    
+    def is_obviously_low_quality(self, intervention: Intervention) -> bool:
+        """Quick check for obviously low-quality interventions that we can skip without LLM."""
+        content_lower = intervention.user_message.lower()
+        
+        # Very short messages that are just stop signals
+        if len(content_lower.strip()) < 20:
+            if any(word in content_lower for word in ['stop', 'wait', 'no', 'hold on']):
+                return True
+        
+        # User explicitly taking over to run something themselves
+        takeover_phrases = [
+            r'i\'ll (do|run|handle) (it|that) myself',
+            r'let me (do|run) (it|that)',
+            r'i want to see the output',
+            r'run.*in.*terminal',
+            r'i\'ll take it from here',
+        ]
+        for phrase in takeover_phrases:
+            if re.search(phrase, content_lower):
+                return True
+        
+        # Check for system messages (regardless of intervention type)
+        for pattern in self.system_message_patterns:
+            if re.search(pattern, intervention.user_message, re.IGNORECASE):
+                return True
+        
+        # Pure tool cancellations without explanation
+        if intervention.type == InterventionType.TOOL_REJECTION:
+            # If the message is just about canceling a tool without teaching
+            if len(content_lower) < 50 and 'instead' not in content_lower and 'should' not in content_lower:
+                return True
+        
+        return False
     
     def _extract_text_content(self, content: Any) -> Optional[str]:
         """Extract text from various content formats."""

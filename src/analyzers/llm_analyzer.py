@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 from ..conversation_scanner import Message, ConversationFile
 from ..claude_md_parser import ClaudeMdStructure, Rule
-from ..detectors import Intervention, InterventionType
+from ..detectors import Intervention, InterventionType, InterventionDetector
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +121,33 @@ Return ONLY valid JSON matching this structure:
     "conversation_tone": "...",
     "notable_features": ["..."]
 }}""",
+            
+            "classify_intervention_quality": """Classify the quality of this user intervention for improving AI behavior.
+
+Intervention context:
+- User message: {user_message}
+- Claude's previous action: {claude_action}
+- What happened next: {post_intervention}
+
+Classify this intervention's learning value:
+1. teaching_value: Is this teaching Claude how to behave better? (high/medium/low/none)
+2. intervention_reason: Why did the user intervene? (wrong_approach/missing_context/user_preference/operational/unclear)
+3. has_explanation: Does the user explain what's wrong or what to do instead? (true/false)
+4. actionable_guidance: Does this provide clear guidance Claude could follow next time? (true/false)
+
+Consider:
+- High value: User explains what's wrong AND provides correct approach
+- Medium value: User corrects but doesn't fully explain
+- Low value: User stops without explanation or just wants to do it themselves
+- None: Operational interruption (user wants to see output, run manually, etc)
+
+Return ONLY valid JSON:
+{{
+    "teaching_value": "high/medium/low/none",
+    "intervention_reason": "...",
+    "has_explanation": true/false,
+    "actionable_guidance": true/false
+}}""",
 
             "analyze_intervention": """Analyze this problematic conversation:
 
@@ -157,7 +184,7 @@ Return ONLY valid JSON:
     "pattern_category": "..."
 }}""",
 
-            "analyze_multiple_interventions": """Analyze multiple interventions from this conversation:
+            "analyze_multiple_interventions": """Analyze multiple interventions from this conversation, focusing on learning opportunities:
 
 Conversation classification:
 - Intent: {user_intent}
@@ -168,6 +195,7 @@ Conversation classification:
 Interventions to analyze:
 {interventions_list}
 
+Focus on extracting ACTIONABLE LESSONS from interventions where the user is teaching/correcting behavior.
 For EACH intervention listed above, analyze and return ONLY valid JSON with NO comments:
 {{
     "interventions": [
@@ -177,7 +205,7 @@ For EACH intervention listed above, analyze and return ONLY valid JSON with NO c
             "what_went_wrong": "Specific mistake or issue",
             "claude_assumption": "What Claude incorrectly assumed",
             "user_expectation": "What user actually wanted",
-            "prevention_rule": "Rule to prevent this",
+            "prevention_rule": "SPECIFIC, CONCRETE rule that would prevent this (e.g., 'Always ask before creating new files' not 'Be more careful')",
             "severity_assessment": "low/medium/high",
             "pattern_category": "scope_creep/premature_action/wrong_approach/misunderstanding/incomplete_task/technical_error/other"
         }}
@@ -221,26 +249,36 @@ Return ONLY valid JSON:
     "recommendations": ["..."]
 }}""",
 
-            "synthesize_claude_md": """Synthesize CLAUDE.md improvements based on comprehensive analysis.
+            "synthesize_claude_md": """Analyze and improve this CLAUDE.md document based on conversation analysis findings.
 
-Current CLAUDE.md Rules:
-{existing_rules}
+EXISTING CLAUDE.md DOCUMENT:
+{existing_content}
 
-Analysis Findings:
+ANALYSIS FINDINGS:
 - Total conversations analyzed: {total_conversations}
 - Success rate: {success_rate}%
 - Common intervention patterns: {intervention_patterns}
 - Top systemic issues: {top_issues}
 - Top recommendations from analysis: {top_recommendations}
 
-For each existing rule, evaluate:
-1. effectiveness: Did following this rule prevent issues? (keep/modify/remove)
-2. evidence: How many conversations support this decision?
-3. suggested_change: If modify, what's the improved version?
+TASK:
+1. First, analyze the existing document:
+   - Identify its structure, sections, and formatting style
+   - Note the voice/tone (prescriptive vs suggestive, formal vs casual)
+   - Understand existing rules, principles, and guidance
+   - Observe how examples and code blocks are formatted
 
-Also identify:
-- gaps: What new rules would prevent observed issues?
-- priority: Which changes would have the most impact?
+2. Then, based on the analysis findings, determine:
+   - Which existing guidance is working well (evidence from high success rate)
+   - Which existing rules may need clarification or enhancement
+   - What new guidance would prevent the observed issues
+   - Where in the document structure these changes best fit
+
+3. Create improvements that:
+   - Preserve the document's existing style and voice
+   - Integrate naturally with existing sections
+   - Enhance rather than duplicate existing rules
+   - Add new guidance only where gaps exist
 
 Return a comprehensive synthesis:
 {{
@@ -274,6 +312,14 @@ Return a comprehensive synthesis:
             "priority": "high/medium/low"
         }}
     ],
+    "integration_guidance": {{
+        "style_notes": "Document style and voice observations",
+        "section_structure": ["Main sections identified"],
+        "formatting_conventions": "Markdown conventions used",
+        "recommended_placement": {{
+            "rule_id": "Where in document to place this change"
+        }}
+    }},
     "synthesis_summary": "Overall assessment of CLAUDE.md effectiveness and key improvements"
 }}"""
         }
@@ -281,6 +327,7 @@ Return a comprehensive synthesis:
     async def analyze_conversations(self,
                                   conversations: List[Tuple[ConversationFile, List[Message]]],
                                   claude_md: Optional[ClaudeMdStructure] = None,
+                                  claude_md_content: Optional[str] = None,  # Raw CLAUDE.md content for LLM synthesis
                                   depth: AnalysisDepth = AnalysisDepth.STANDARD,
                                   tracker: Optional['ProcessingTracker'] = None,
                                   force_all: bool = False) -> Dict[str, Any]:
@@ -353,10 +400,10 @@ Return a comprehensive synthesis:
                 )
         
         # Phase 4: Synthesize CLAUDE.md improvements if existing CLAUDE.md provided
-        if claude_md and depth == AnalysisDepth.DEEP:
+        if (claude_md or claude_md_content) and depth == AnalysisDepth.DEEP:
             logger.info(f"Phase 4: Synthesizing CLAUDE.md improvements with {self.models['synthesizer']}...")
             synthesis = await self._synthesize_claude_md_improvements(
-                claude_md, results["summary_statistics"], results["deep_analyses"]
+                claude_md, claude_md_content, results["summary_statistics"], results["deep_analyses"]
             )
             results["claude_md_synthesis"] = synthesis
             logger.info("Generated CLAUDE.md improvement synthesis")
@@ -520,7 +567,7 @@ Return a comprehensive synthesis:
                     # Convert cached results back to InterventionAnalysis objects
                     for analysis_data in cached_result:
                         # Reconstruct the Intervention object
-                        from ..detectors import Intervention, InterventionType
+                        from ..detectors import Intervention, InterventionType, InterventionDetector
                         intervention_data = analysis_data['intervention']
                         intervention = Intervention(
                             type=InterventionType[intervention_data['type']],
@@ -737,7 +784,7 @@ Return a comprehensive synthesis:
             data = json.loads(content[json_start:json_end])
             
             # Create a pseudo-intervention for the whole conversation
-            from ..detectors import Intervention, InterventionType
+            from ..detectors import Intervention, InterventionType, InterventionDetector
             pseudo_intervention = Intervention(
                 type=InterventionType.CORRECTION,
                 message_index=len(messages) - 1 if messages else 0,
@@ -753,56 +800,107 @@ Return a comprehensive synthesis:
         
         return None
     
+    async def _classify_intervention_quality_batch(self, 
+                                                 interventions: List[Intervention], 
+                                                 messages: List[Message]) -> List[Tuple[Intervention, Dict]]:
+        """Classify multiple interventions for quality using the classifier model."""
+        classified = []
+        
+        # Process in small batches for efficiency
+        for i in range(0, len(interventions), 5):
+            batch = interventions[i:i+5]
+            batch_tasks = []
+            
+            for intervention in batch:
+                # Get context
+                claude_action = "Unknown"
+                if intervention.message_index > 0:
+                    prev_msg = messages[intervention.message_index - 1]
+                    if prev_msg.role == 'assistant':
+                        claude_action = self._extract_text_content(prev_msg.content)[:200]
+                
+                # Get post-intervention context
+                post_intervention = "No further messages"
+                if intervention.message_index + 1 < len(messages):
+                    next_msgs = messages[intervention.message_index + 1:intervention.message_index + 3]
+                    post_parts = []
+                    for msg in next_msgs:
+                        content = self._extract_text_content(msg.content)
+                        if content:
+                            post_parts.append(f"{msg.role}: {content[:100]}")
+                    post_intervention = " | ".join(post_parts)
+                
+                prompt = self.prompts["classify_intervention_quality"].format(
+                    user_message=intervention.user_message[:300],
+                    claude_action=claude_action,
+                    post_intervention=post_intervention
+                )
+                
+                task = self.async_client.messages.create(
+                    model=self.models["classifier"],
+                    max_tokens=200,
+                    temperature=0,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                batch_tasks.append(task)
+            
+            # Execute batch
+            responses = await asyncio.gather(*batch_tasks)
+            
+            # Parse responses
+            for intervention, response in zip(batch, responses):
+                try:
+                    content = response.content[0].text
+                    json_start = content.find('{')
+                    json_end = content.rfind('}') + 1
+                    if json_start >= 0 and json_end > json_start:
+                        quality_data = json.loads(content[json_start:json_end])
+                        classified.append((intervention, quality_data))
+                    else:
+                        # Default to unknown quality
+                        classified.append((intervention, {"teaching_value": "medium"}))
+                except Exception as e:
+                    logger.error(f"Error classifying intervention quality: {e}")
+                    classified.append((intervention, {"teaching_value": "medium"}))
+        
+        return classified
+    
     async def _analyze_multiple_interventions(self,
                                             interventions: List[Intervention],
                                             messages: List[Message],
                                             classification: ConversationClassification) -> List[InterventionAnalysis]:
         """Analyze multiple interventions in a single API call."""
-        # Prioritize interventions by severity and type
-        # Higher priority for interventions that indicate fundamental issues
-        priority_order = {
-            InterventionType.STOP_ACTION: 1,      # Urgent prevention
-            InterventionType.TAKEOVER: 2,         # User taking control
-            InterventionType.CORRECTION: 3,       # Fundamental misunderstanding
-            InterventionType.TOOL_REJECTION: 4,   # Prevented risky action
-            InterventionType.APPROACH_CHANGE: 5,  # Wrong method
-            InterventionType.SCOPE_REDIRECT: 6,   # Scope creep
-            InterventionType.CLARIFICATION: 7     # Minor clarification
-        }
+        # First, filter out obviously low-quality interventions
+        detector = InterventionDetector()
+        potentially_valuable = []
         
-        # Sort interventions by priority
-        # Consider severity first for truly critical issues
-        sorted_interventions = sorted(
-            interventions,
-            key=lambda i: (
-                # High severity always comes first regardless of type
-                0 if i.severity == 'high' else 1,
-                # Then by intervention type priority
-                priority_order.get(i.type, 8),
-                # Then by remaining severity levels
-                0 if i.severity == 'medium' else 1,
-                # Finally by order in conversation
-                i.message_index
+        for intervention in interventions:
+            if not detector.is_obviously_low_quality(intervention):
+                potentially_valuable.append(intervention)
+            else:
+                logger.debug(f"Skipping obviously low-quality intervention: {intervention.type.value}")
+        
+        # If we still have too many, we'll need to classify them
+        if len(potentially_valuable) > 15:
+            # Use classifier to score remaining interventions
+            classified_interventions = await self._classify_intervention_quality_batch(
+                potentially_valuable[:30], messages  # Limit to 30 for API efficiency
             )
-        )
+            
+            # Sort by teaching value
+            high_value = [i for i, q in classified_interventions if q.get('teaching_value') == 'high']
+            medium_value = [i for i, q in classified_interventions if q.get('teaching_value') == 'medium']
+            
+            # Prioritize high-value interventions
+            interventions_to_analyze = high_value[:8] + medium_value[:2]
+        else:
+            # Analyze all potentially valuable interventions
+            interventions_to_analyze = potentially_valuable[:10]
         
-        # Take the most important interventions
-        interventions_to_analyze = sorted_interventions[:10]
-        
-        if len(interventions) > 10:
-            # Log what we're keeping and what we're skipping
-            kept_types = {}
-            skipped_types = {}
-            
-            for i in interventions_to_analyze:
-                kept_types[i.type.value] = kept_types.get(i.type.value, 0) + 1
-            
-            for i in sorted_interventions[10:]:
-                skipped_types[i.type.value] = skipped_types.get(i.type.value, 0) + 1
-            
-            logger.info(f"Analyzing 10 most important interventions out of {len(interventions)}")
-            logger.info(f"Keeping: {kept_types}")
-            logger.info(f"Skipping: {skipped_types}")
+        # Log filtering results
+        if len(interventions) > len(interventions_to_analyze):
+            logger.info(f"Filtered interventions: {len(interventions)} -> {len(potentially_valuable)} -> {len(interventions_to_analyze)}")
+            logger.info(f"Removed {len(interventions) - len(potentially_valuable)} obviously low-quality interventions")
         
         # Format interventions list
         interventions_list = ""
@@ -901,16 +999,26 @@ Return a comprehensive synthesis:
     
     def _truncate_message(self, content: Any, max_length: int = 200) -> str:
         """Truncate a message for display."""
-        if isinstance(content, str):
-            text = content
-        elif isinstance(content, list):
-            text = " ".join(str(item.get("text", "")) for item in content if isinstance(item, dict))
-        else:
-            text = str(content)
-        
-        if len(text) > max_length:
+        text = self._extract_text_content(content)
+        if text and len(text) > max_length:
             return text[:max_length] + "..."
-        return text
+        return text or ""
+    
+    def _extract_text_content(self, content: Any) -> Optional[str]:
+        """Extract text from various content formats."""
+        if isinstance(content, str):
+            return content
+        elif isinstance(content, list):
+            text_parts = []
+            for item in content:
+                if isinstance(item, dict) and item.get('type') == 'text':
+                    text_parts.append(item.get('text', ''))
+                elif isinstance(item, str):
+                    text_parts.append(item)
+            return ' '.join(text_parts) if text_parts else None
+        elif isinstance(content, dict):
+            return content.get('text', content.get('content', ''))
+        return None
     
     async def _deep_analyze_conversations(self,
                                         sample_conversations: List[Tuple[ConversationFile, List[Message]]],
@@ -1146,15 +1254,24 @@ Return a comprehensive synthesis:
         }
     
     async def _synthesize_claude_md_improvements(self,
-                                                claude_md: ClaudeMdStructure,
+                                                claude_md: Optional[ClaudeMdStructure],
+                                                claude_md_content: Optional[str],
                                                 summary_stats: Dict[str, Any],
                                                 deep_analyses: List[DeepConversationAnalysis]) -> Dict[str, Any]:
         """Synthesize improvements to CLAUDE.md based on analysis."""
-        # Format existing rules
-        existing_rules = "\n".join([
-            f"- {rule.title}: {rule.content[:100]}..."
-            for rule in claude_md.rules[:20]  # Limit to avoid token limits
-        ])
+        # Use raw content if available, otherwise fall back to structured rules
+        if claude_md_content:
+            # Use raw content for more natural synthesis
+            existing_content = claude_md_content[:8000]  # Limit for token constraints
+        elif claude_md:
+            # Fall back to structured rules if no raw content
+            existing_rules = "\n".join([
+                f"- {rule.title}: {rule.content[:100]}..."
+                for rule in claude_md.rules[:20]  # Limit to avoid token limits
+            ])
+            existing_content = f"Extracted rules:\n{existing_rules}"
+        else:
+            existing_content = "No existing CLAUDE.md provided"
         
         # Format intervention patterns
         intervention_patterns = []
@@ -1167,7 +1284,7 @@ Return a comprehensive synthesis:
         top_recommendations = [rec for rec, _ in summary_stats.get('top_recommendations', [])[:5]]
         
         prompt = self.prompts["synthesize_claude_md"].format(
-            existing_rules=existing_rules,
+            existing_content=existing_content,
             total_conversations=summary_stats.get('total_conversations', 0),
             success_rate=summary_stats.get('success_rate', 0) * 100,
             intervention_patterns=", ".join(intervention_patterns),

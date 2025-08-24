@@ -21,6 +21,7 @@ from src.analyzers import LLMAnalyzer, AnalysisDepth
 from src.generators import ReportGenerator
 from src.detectors import InterventionDetector
 from src.processing_tracker import ProcessingTracker
+from src.cost_estimator import CostEstimator
 
 # Load environment variables
 load_dotenv()
@@ -73,13 +74,28 @@ logger = logging.getLogger(__name__)
     envvar='ANTHROPIC_API_KEY',
     help='Anthropic API key (can also use ANTHROPIC_API_KEY env var)'
 )
+@click.option(
+    '--resume', '-R',
+    type=click.STRING,
+    is_flag=False,
+    flag_value='LATEST',
+    default=None,
+    help='Resume a previous analysis run. Use alone for most recent, or provide specific run ID'
+)
+@click.option(
+    '--estimate-cost',
+    is_flag=True,
+    help='Estimate API costs without running analysis'
+)
 def main(
     conversations_dir: str,
     claude_md: Optional[str],
     output_dir: str,
     all: bool,
     config: Optional[str],
-    api_key: Optional[str]
+    api_key: Optional[str],
+    resume: Optional[str],
+    estimate_cost: bool
 ):
     """Analyze Claude Code conversations to improve CLAUDE.md files."""
     
@@ -103,26 +119,78 @@ def main(
         if output_dir == './analysis_results':
             output_dir = config_data.get('output_dir', output_dir)
     
-    # Validate API key
-    if not api_key:
+    # Validate API key (not needed for cost estimation)
+    if not estimate_cost and not api_key:
         console.print("[red]Error: Anthropic API key not found![/red]")
         console.print("Please set ANTHROPIC_API_KEY environment variable or use --api-key option")
         return
     
     console.print("[bold green]Claude Conversation Analyzer[/bold green]")
+    
+    # Handle run ID and output directory
+    if resume:
+        # Resuming a previous run
+        if resume == 'LATEST' or resume == '':
+            # Find the most recent run
+            run_dirs = sorted([d for d in Path(output_dir).glob("20*_*-*-*") if d.is_dir()], reverse=True)
+            if not run_dirs:
+                console.print(f"[red]Error: No previous runs found in {output_dir}[/red]")
+                return
+            run_id = run_dirs[0].name
+            run_output_dir = run_dirs[0]
+            console.print(f"[blue]Resuming most recent run: {run_id}[/blue]")
+        else:
+            # Resume specific run
+            run_id = resume
+            run_output_dir = Path(output_dir) / run_id
+            if not run_output_dir.exists():
+                console.print(f"[red]Error: Cannot find previous run '{run_id}' in {output_dir}[/red]")
+                console.print(f"[yellow]Available runs:[/yellow]")
+                for run_dir in sorted(Path(output_dir).glob("20*_*-*-*"), reverse=True):
+                    if run_dir.is_dir():
+                        console.print(f"  • {run_dir.name}")
+                return
+            console.print(f"[blue]Resuming analysis run: {run_id}[/blue]")
+    else:
+        # Create new run with datetime-based ID
+        run_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        run_output_dir = Path(output_dir) / run_id
+        run_output_dir.mkdir(parents=True, exist_ok=True)
+        console.print(f"[blue]Starting new analysis run: {run_id}[/blue]")
+    
     console.print(f"Analyzing conversations in: {conversations_dir}")
+    console.print(f"Output directory: {run_output_dir}")
     
-    # Create output directory
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    # Save run metadata
+    metadata_file = run_output_dir / "run_metadata.json"
+    import json
+    metadata = {
+        "run_id": run_id,
+        "started_at": datetime.now().isoformat(),
+        "conversations_dir": conversations_dir,
+        "claude_md_path": claude_md,
+        "resumed": resume is not None,
+        "parameters": {
+            "process_all": all,
+            "config_file": config
+        }
+    }
     
-    # Run analysis
+    if not resume:
+        # Save initial metadata for new runs
+        with open(metadata_file, 'w') as f:
+            json.dump(metadata, f, indent=2)
+    
+    # Run analysis or estimate costs
     try:
         asyncio.run(analyze_conversations(
             conversations_dir=conversations_dir,
             claude_md_path=claude_md,
-            output_dir=output_dir,
+            output_dir=str(run_output_dir),
             process_all=all,
-            api_key=api_key
+            api_key=api_key,
+            run_id=run_id,
+            estimate_only=estimate_cost
         ))
     except Exception as e:
         console.print(f"[red]Error during analysis: {e}[/red]")
@@ -135,7 +203,9 @@ async def analyze_conversations(
     claude_md_path: Optional[str],
     output_dir: str,
     process_all: bool,
-    api_key: str
+    api_key: str,
+    run_id: str,
+    estimate_only: bool = False
 ):
     """Main analysis workflow."""
     
@@ -191,8 +261,9 @@ async def analyze_conversations(
         if validation_report.empty_files:
             console.print(f"[yellow]Empty files: {len(validation_report.empty_files)}[/yellow]")
     
-    # Step 2: Parse CLAUDE.md if provided or check default location
-    claude_md_structure = None
+    # Step 2: Read CLAUDE.md if provided or check default location
+    claude_md_content = None
+    claude_md_structure = None  # Keep for backward compatibility
     parser = ClaudeMdParser()
     
     # If no claude_md_path provided, check default location
@@ -203,10 +274,19 @@ async def analyze_conversations(
             console.print(f"[blue]Found CLAUDE.md at default location: {default_claude_md}[/blue]")
     
     if claude_md_path:
-        console.print(f"[blue]Parsing existing CLAUDE.md...[/blue]")
-        claude_md_structure = parser.parse(claude_md_path)
-        if claude_md_structure:
-            console.print(f"[green]Found {len(claude_md_structure.rules)} rules in CLAUDE.md[/green]")
+        console.print(f"[blue]Reading existing CLAUDE.md...[/blue]")
+        try:
+            with open(claude_md_path, 'r', encoding='utf-8') as f:
+                claude_md_content = f.read()
+            console.print(f"[green]Loaded CLAUDE.md ({len(claude_md_content)} characters)[/green]")
+            
+            # Still parse for basic validation and backward compatibility
+            claude_md_structure = parser.parse(claude_md_path)
+            if claude_md_structure:
+                console.print(f"[dim]Found {len(claude_md_structure.rules)} rules in CLAUDE.md[/dim]")
+        except Exception as e:
+            logger.error(f"Failed to read CLAUDE.md: {e}")
+            claude_md_content = None
     
     # Step 3: Load conversations
     console.print("[blue]Loading conversation messages...[/blue]")
@@ -230,9 +310,6 @@ async def analyze_conversations(
             except Exception as e:
                 logger.warning(f"Failed to load {conv_file.conversation_id}: {e}")
     
-    # Step 4: Run LLM analysis
-    console.print("\n[bold blue]Running deep analysis...[/bold blue]")
-    
     # Load model configurations from environment
     models = {}
     if os.getenv('CLAUDE_CLASSIFIER_MODEL'):
@@ -241,6 +318,32 @@ async def analyze_conversations(
         models['analyzer'] = os.getenv('CLAUDE_ANALYZER_MODEL')
     if os.getenv('CLAUDE_SYNTHESIZER_MODEL'):
         models['synthesizer'] = os.getenv('CLAUDE_SYNTHESIZER_MODEL')
+    
+    # Step 3.5: Cost Estimation (if requested)
+    if estimate_only:
+        console.print("\n[bold blue]Estimating API Costs...[/bold blue]")
+        
+        estimator = CostEstimator(models=models if models else None)
+        estimates = estimator.estimate_phase_costs(
+            conversations_with_messages, 
+            claude_md_content=claude_md_content
+        )
+        
+        # Display cost estimates
+        estimator.display_cost_estimate(estimates, show_details=True)
+        
+        # Save estimate to file
+        estimate_file = Path(output_dir) / "cost_estimate.json"
+        import json
+        with open(estimate_file, 'w') as f:
+            json.dump(estimates, f, indent=2)
+        
+        console.print(f"\n[green]Cost estimate saved to: {estimate_file}[/green]")
+        console.print("\n[yellow]To proceed with analysis, run without --estimate-cost flag[/yellow]")
+        return
+    
+    # Step 4: Run LLM analysis
+    console.print("\n[bold blue]Running deep analysis...[/bold blue]")
     
     if models:
         logger.info(f"Using custom models: {models}")
@@ -257,6 +360,7 @@ async def analyze_conversations(
         analysis_results = await analyzer.analyze_conversations(
             conversations=conversations_with_messages,
             claude_md=claude_md_structure,
+            claude_md_content=claude_md_content,  # Pass raw content for LLM-based synthesis
             depth=AnalysisDepth.DEEP,
             tracker=tracker,
             force_all=process_all
@@ -329,6 +433,23 @@ async def analyze_conversations(
     successfully_analyzed = [cf for cf, _ in conversations_with_messages]
     tracker.mark_all_processed(successfully_analyzed)
     console.print(f"[green]Marked {len(successfully_analyzed)} conversations as processed[/green]")
+    
+    # Update run metadata with completion info
+    metadata_file = Path(output_dir) / "run_metadata.json"
+    import json
+    if metadata_file.exists():
+        with open(metadata_file, 'r') as f:
+            metadata = json.load(f)
+    else:
+        metadata = {"run_id": run_id}
+    
+    metadata["completed_at"] = datetime.now().isoformat()
+    metadata["conversations_analyzed"] = len(successfully_analyzed)
+    metadata["success_rate"] = stats.get('success_rate', 0) if stats else 0
+    metadata["generated_files"] = generated_files
+    
+    with open(metadata_file, 'w') as f:
+        json.dump(metadata, f, indent=2)
 
 
 if __name__ == '__main__':

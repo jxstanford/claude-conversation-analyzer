@@ -744,10 +744,64 @@ These rules have proven effective and should remain unchanged:
         
         logger.info(f"Extracted {min(len(intervention_analyses), 10)} intervention examples")
     
+    def _generate_integrated_claude_md(self, analysis_results: Dict[str, Any]) -> str:
+        """Generate CLAUDE.md using LLM synthesis for natural integration."""
+        synthesis = analysis_results.get('claude_md_synthesis', {})
+        stats = analysis_results.get('summary_statistics', {})
+        
+        # Start with a base template that respects existing style
+        integration = synthesis.get('integration_guidance', {})
+        style_notes = integration.get('style_notes', '')
+        
+        content = f"""# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+*Updated based on analysis of {stats.get('total_conversations', 0)} conversations*
+
+"""
+        
+        # Add synthesis summary as overview
+        if synthesis.get('synthesis_summary'):
+            content += f"## Overview\n\n{synthesis['synthesis_summary']}\n\n"
+        
+        # Add new rules in appropriate sections
+        rules_to_add = synthesis.get('rules_to_add', [])
+        if rules_to_add:
+            content += "## Key Guidelines\n\n"
+            for rule in rules_to_add:
+                if rule.get('priority') == 'high':
+                    content += f"### {rule['rule']}\n"
+                    content += f"{rule['reason']}\n\n"
+        
+        # Add modifications to existing rules
+        rules_to_modify = synthesis.get('rules_to_modify', [])
+        if rules_to_modify:
+            content += "## Enhanced Guidelines\n\n"
+            for mod in rules_to_modify:
+                content += f"### {mod['proposed']}\n"
+                content += f"*Enhanced from: {mod['current'][:50]}...*\n"
+                content += f"Reason: {mod['reason']}\n\n"
+        
+        # Add notes about what's working well
+        rules_to_keep = synthesis.get('rules_to_keep', [])
+        if rules_to_keep:
+            content += "## Proven Effective Practices\n\n"
+            for keep in rules_to_keep[:5]:
+                content += f"- {keep['rule']}\n"
+        
+        return content
+    
     def generate_claude_md_from_analysis(self, analysis_results: Dict[str, Any]) -> str:
         """Generate a comprehensive CLAUDE.md file based on analysis insights."""
         stats = analysis_results.get('summary_statistics', {})
+        synthesis = analysis_results.get('claude_md_synthesis', {})
         
+        # If we have LLM synthesis with integration guidance, use it
+        if synthesis and 'integration_guidance' in synthesis:
+            return self._generate_integrated_claude_md(analysis_results)
+        
+        # Otherwise fall back to the mechanical generation
         content = f"""# CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
