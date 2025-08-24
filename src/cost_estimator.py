@@ -186,7 +186,7 @@ class CostEstimator:
         }
         
         # Phase 3: Deep Analysis (Opus) - Top 10% most problematic
-        deep_conversations = max(5, int(intervention_conversations * 0.33))  # ~10% of total
+        deep_conversations = max(5, int(intervention_conversations * 0.33)) if intervention_conversations > 0 else 0  # ~10% of total
         
         synthesizer_model = self.models.get('synthesizer', 'claude-3-opus-latest')
         synthesizer_pricing = CLAUDE_PRICING.get(synthesizer_model,

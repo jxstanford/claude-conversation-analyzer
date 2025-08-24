@@ -62,7 +62,9 @@ class TestInterventionDetector:
         # But they should be marked as low quality
         for intervention in interventions:
             if "[Request interrupted" in intervention.user_message:
-                assert detector.is_obviously_low_quality(intervention) == True
+                is_low_quality, reason = detector.is_obviously_low_quality(intervention)
+                assert is_low_quality == True
+                assert "system_message" in reason
     
     def test_truncated_messages_filtered(self, detector):
         """Test that truncated messages are detected but marked as low quality."""
@@ -77,7 +79,9 @@ class TestInterventionDetector:
         # Truncated messages should be filtered as low quality if detected
         for intervention in interventions:
             if intervention.user_message.endswith("..."):
-                assert detector.is_obviously_low_quality(intervention) == True
+                is_low_quality, reason = detector.is_obviously_low_quality(intervention)
+                assert is_low_quality == True
+                assert reason is not None  # Should have a reason
     
     def test_is_obviously_low_quality_short_stops(self, detector):
         """Test that very short stop messages are flagged as low quality."""
@@ -99,8 +103,11 @@ class TestInterventionDetector:
                 severity="low"
             )
             
-            result = detector.is_obviously_low_quality(intervention)
-            assert result == expected_low_quality, f"Failed for message: '{message}'"
+            is_low_quality, reason = detector.is_obviously_low_quality(intervention)
+            assert is_low_quality == expected_low_quality, f"Failed for message: '{message}'"
+            if expected_low_quality:
+                assert reason is not None, f"Expected reason for filtering: '{message}'"
+                assert "stop" in reason or "short" in reason, f"Unexpected reason: {reason}"
     
     def test_is_obviously_low_quality_takeovers(self, detector):
         """Test that user takeovers are flagged as low quality."""
@@ -123,8 +130,11 @@ class TestInterventionDetector:
                 severity="low"
             )
             
-            result = detector.is_obviously_low_quality(intervention)
-            assert result == expected_low_quality, f"Failed for message: '{message}'"
+            is_low_quality, reason = detector.is_obviously_low_quality(intervention)
+            assert is_low_quality == expected_low_quality, f"Failed for message: '{message}'"
+            if expected_low_quality:
+                assert reason is not None, f"Expected reason for filtering: '{message}'"
+                assert "stop" in reason or "short" in reason, f"Unexpected reason: {reason}"
     
     def test_is_obviously_low_quality_system_messages(self, detector):
         """Test that system messages are always flagged as low quality."""
@@ -145,8 +155,10 @@ class TestInterventionDetector:
                 severity="medium"
             )
             
-            result = detector.is_obviously_low_quality(intervention)
-            assert result == True, f"System message not filtered: '{message}'"
+            is_low_quality, reason = detector.is_obviously_low_quality(intervention)
+            assert is_low_quality == True, f"System message not filtered: '{message}'"
+            assert reason is not None
+            assert "system_message" in reason, f"Expected system_message reason, got: {reason}"
     
     def test_is_obviously_low_quality_tool_rejections(self, detector):
         """Test tool rejection quality detection."""
@@ -172,8 +184,15 @@ class TestInterventionDetector:
                 severity="medium"
             )
             
-            result = detector.is_obviously_low_quality(intervention)
-            assert result == expected_low_quality, f"Failed for message: '{message}'"
+            is_low_quality, reason = detector.is_obviously_low_quality(intervention)
+            assert is_low_quality == expected_low_quality, f"Failed for message: '{message}'"
+            if expected_low_quality:
+                assert reason is not None, f"Expected reason for filtering: '{message}'"
+                # Tool rejections have their own specific reason
+                if intervention_type == InterventionType.TOOL_REJECTION:
+                    assert "tool_rejection" in reason or "too_short" in reason, f"Unexpected reason: {reason}"
+                else:
+                    assert "stop" in reason or "short" in reason, f"Unexpected reason: {reason}"
     
     def test_detect_interventions_comprehensive(self, detector):
         """Test comprehensive intervention detection scenario."""
@@ -197,18 +216,23 @@ class TestInterventionDetector:
         fastapi_intervention = next((i for i in interventions 
                                     if "FastAPI" in i.user_message), None)
         assert fastapi_intervention is not None
-        assert detector.is_obviously_low_quality(fastapi_intervention) == False
+        is_low_quality, _ = detector.is_obviously_low_quality(fastapi_intervention)
+        assert is_low_quality == False
         
         # Short "stop" should be detected but marked as low quality
         stop_intervention = next((i for i in interventions 
                                  if i.user_message == "stop"), None)
         if stop_intervention:
-            assert detector.is_obviously_low_quality(stop_intervention) == True
+            is_low_quality, reason = detector.is_obviously_low_quality(stop_intervention)
+            assert is_low_quality == True
+            assert "short" in reason or "stop" in reason
         
         # System messages should be marked as low quality if detected
         for intervention in interventions:
             if "[Request interrupted" in intervention.user_message:
-                assert detector.is_obviously_low_quality(intervention) == True
+                is_low_quality, reason = detector.is_obviously_low_quality(intervention)
+                assert is_low_quality == True
+                assert "system_message" in reason
     
     def test_empty_messages(self, detector):
         """Test handling of empty message list."""

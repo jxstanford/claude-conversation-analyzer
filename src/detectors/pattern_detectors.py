@@ -80,14 +80,15 @@ class InterventionDetector:
         self.system_message_patterns = [
             r"The user doesn't want to proceed with this tool use",
             r"Tool use was rejected.*STOP what you are doing",
-            r"\[Request interrupted by user\]",
-            r"^\s*\d+→",  # Line numbers at start
+            r"\[Request interrupted by user\]",  # System intervention message
+            # Note: Removed line number pattern as it was too broad
             r"^\s*===+\s*test session starts\s*===+",  # Test output
-            r"^\[\{.*'type':\s*'text'.*\}\]$",  # JSON-like structures
             r"^\[!\].*Using tool",  # Tool usage notifications
             r"^<function_calls>",  # Function call markers
             r"^🎯.*Planning task:",  # Planning markers
             r"^System:",  # System messages
+            r"^<command-message>.*</command-message>",  # Claude Code command messages
+            r"^<command-name>.*</command-name>",  # Claude Code command names
         ]
         
         # Truncation indicators - be conservative to avoid false positives
@@ -146,12 +147,15 @@ class InterventionDetector:
             
             content = self._extract_text_content(message.content)
             if not content:
+                # Log when we skip messages with no extractable content
+                logger.debug(f"Skipping message {i} - no extractable user text content")
                 continue
             
             # Check for intervention patterns (no filtering here - all filtering happens later)
             for intervention_type, patterns in self.intervention_patterns.items():
                 for pattern in patterns:
                     if re.search(pattern, content, re.IGNORECASE):
+                        logger.debug(f"Detected {intervention_type.value} at message {i} matching pattern '{pattern}': {content[:50]}...")
                         intervention = self._create_intervention(
                             intervention_type, i, content, messages
                         )
@@ -159,6 +163,7 @@ class InterventionDetector:
                             interventions.append(intervention)
                         break
         
+        logger.info(f"Detected {len(interventions)} total interventions in conversation")
         return interventions
     
     def _create_intervention(self, 
@@ -225,10 +230,13 @@ class InterventionDetector:
         return "medium"
     
     
-    def is_obviously_low_quality(self, intervention: Intervention) -> bool:
+    def is_obviously_low_quality(self, intervention: Intervention) -> Tuple[bool, Optional[str]]:
         """Quick check for obviously low-quality interventions that we can skip without LLM.
         
         This is the single place where all filtering decisions are made.
+        
+        Returns:
+            Tuple of (is_low_quality, reason_for_filtering)
         """
         content = intervention.user_message
         content_lower = content.lower()
@@ -237,11 +245,17 @@ class InterventionDetector:
         # 1. Check for system-generated messages
         for pattern in self.system_message_patterns:
             if re.search(pattern, content, re.IGNORECASE | re.MULTILINE):
-                return True
+                # Find which pattern matched for logging
+                pattern_desc = pattern[:30] + "..." if len(pattern) > 30 else pattern
+                reason = f"system_message: matched '{pattern_desc}'"
+                logger.debug(f"Filtering intervention - {reason}: '{content[:50]}...'")
+                return True, reason
         
         # 2. Skip very short messages (likely incomplete or just signals)
         if len(content_stripped) < 10:
-            return True
+            reason = f"too_short: {len(content_stripped)} chars"
+            logger.debug(f"Filtering intervention - {reason}: '{content_stripped}'")
+            return True, reason
         
         # 3. Check for truncation indicators (but be careful with code)
         # Only apply truncation check if message is short and looks incomplete
@@ -250,14 +264,33 @@ class InterventionDetector:
                 if re.search(pattern, content_stripped):
                     # Exception for code blocks or commands
                     if not any(indicator in content for indicator in ['```', '$(', 'function', 'def', 'class']):
-                        return True
+                        reason = f"truncated: matched pattern '{pattern}'"
+                        logger.debug(f"Filtering intervention - {reason}: '{content[:50]}...'")
+                        return True, reason
         
-        # 4. Very short messages that are just stop signals
+        # 4. Check intervention type-specific filters BEFORE generic short message filters
+        
+        # 4a. Pure tool cancellations without explanation
+        if intervention.type == InterventionType.TOOL_REJECTION:
+            # If the message is just about canceling a tool without teaching
+            # Don't filter if it contains guidance words
+            guidance_words = ['instead', 'should', 'rather', 'better', 'prefer', 'approach']
+            has_guidance = any(word in content_lower for word in guidance_words)
+            if len(content_stripped) < 30 and not has_guidance:
+                reason = f"tool_rejection_without_guidance: {len(content_stripped)} chars"
+                logger.debug(f"Filtering intervention - {reason}: '{content[:50]}...'")
+                return True, reason
+        
+        # 5. Very short messages that are just stop signals
         if len(content_stripped) < 20:
-            if any(word in content_lower for word in ['stop', 'wait', 'no', 'hold on']):
-                return True
+            stop_words = ['stop', 'wait', 'no', 'hold on']
+            for word in stop_words:
+                if word in content_lower:
+                    reason = f"short_stop_signal: {len(content_stripped)} chars with '{word}'"
+                    logger.debug(f"Filtering intervention - {reason}: '{content_stripped}'")
+                    return True, reason
         
-        # 5. User explicitly taking over to run something themselves (without explanation)
+        # 6. User explicitly taking over to run something themselves (without explanation)
         # Only filter short takeover messages without additional context
         if len(content_stripped) < 30:  # Short messages only
             takeover_phrases = [
@@ -269,33 +302,39 @@ class InterventionDetector:
             ]
             for phrase in takeover_phrases:
                 if re.search(phrase, content_lower):
-                    return True
+                    reason = f"short_takeover: matched '{phrase[:30]}...'"
+                    logger.debug(f"Filtering intervention - {reason}: '{content[:50]}...'")
+                    return True, reason
         
-        # 6. Pure tool cancellations without explanation
-        if intervention.type == InterventionType.TOOL_REJECTION:
-            # If the message is just about canceling a tool without teaching
-            # Don't filter if it contains guidance words
-            guidance_words = ['instead', 'should', 'rather', 'better', 'prefer', 'approach']
-            has_guidance = any(word in content_lower for word in guidance_words)
-            if len(content_stripped) < 30 and not has_guidance:
-                return True
-        
-        return False
+        return False, None
     
     def _extract_text_content(self, content: Any) -> Optional[str]:
-        """Extract text from various content formats."""
+        """Extract text from various content formats.
+        
+        Only extracts actual user text, not tool results or system content.
+        """
         if isinstance(content, str):
             return content
         elif isinstance(content, list):
             text_parts = []
             for item in content:
-                if isinstance(item, dict) and item.get('type') == 'text':
-                    text_parts.append(item.get('text', ''))
-                elif isinstance(item, dict) and 'content' in item:
-                    text_parts.append(str(item['content']))
-            return ' '.join(text_parts)
+                if isinstance(item, dict):
+                    # Skip tool results - these are not user messages
+                    if item.get('type') == 'tool_result':
+                        continue
+                    # Extract text from text-type items
+                    if item.get('type') == 'text':
+                        text_parts.append(item.get('text', ''))
+                    # Skip other dict items that have 'content' - likely tool results
+                elif isinstance(item, str):
+                    text_parts.append(item)
+            return ' '.join(text_parts) if text_parts else None
         elif isinstance(content, dict):
-            return str(content.get('text', content.get('content', '')))
+            # Only return text if it's explicitly a text item
+            if content.get('type') == 'text':
+                return content.get('text', '')
+            # Skip tool results and other non-text content
+            return None
         return None
 
 
@@ -358,16 +397,30 @@ class SuccessPatternDetector:
         return patterns
     
     def _extract_text_content(self, content: Any) -> Optional[str]:
-        """Extract text from various content formats."""
-        # Same implementation as InterventionDetector
+        """Extract text from various content formats.
+        
+        Only extracts actual user text, not tool results or system content.
+        """
         if isinstance(content, str):
             return content
         elif isinstance(content, list):
             text_parts = []
             for item in content:
-                if isinstance(item, dict) and item.get('type') == 'text':
-                    text_parts.append(item.get('text', ''))
-            return ' '.join(text_parts)
+                if isinstance(item, dict):
+                    # Skip tool results - these are not user messages
+                    if item.get('type') == 'tool_result':
+                        continue
+                    # Extract text from text-type items
+                    if item.get('type') == 'text':
+                        text_parts.append(item.get('text', ''))
+                elif isinstance(item, str):
+                    text_parts.append(item)
+            return ' '.join(text_parts) if text_parts else None
+        elif isinstance(content, dict):
+            # Only return text if it's explicitly a text item
+            if content.get('type') == 'text':
+                return content.get('text', '')
+            return None
         return None
 
 
@@ -462,14 +515,28 @@ class ErrorPatternDetector:
         return recovery_attempted, recovery_successful
     
     def _extract_text_content(self, content: Any) -> Optional[str]:
-        """Extract text from various content formats."""
-        # Same implementation as above
+        """Extract text from various content formats.
+        
+        Only extracts actual user text, not tool results or system content.
+        """
         if isinstance(content, str):
             return content
         elif isinstance(content, list):
             text_parts = []
             for item in content:
-                if isinstance(item, dict) and item.get('type') == 'text':
-                    text_parts.append(item.get('text', ''))
-            return ' '.join(text_parts)
+                if isinstance(item, dict):
+                    # Skip tool results - these are not user messages
+                    if item.get('type') == 'tool_result':
+                        continue
+                    # Extract text from text-type items
+                    if item.get('type') == 'text':
+                        text_parts.append(item.get('text', ''))
+                elif isinstance(item, str):
+                    text_parts.append(item)
+            return ' '.join(text_parts) if text_parts else None
+        elif isinstance(content, dict):
+            # Only return text if it's explicitly a text item
+            if content.get('type') == 'text':
+                return content.get('text', '')
+            return None
         return None

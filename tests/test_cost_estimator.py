@@ -1,6 +1,7 @@
 """Tests for Cost Estimator module."""
 
 import pytest
+from pathlib import Path
 from unittest.mock import patch, Mock
 from src.cost_estimator import CostEstimator, ModelPricing, CLAUDE_PRICING
 from src.conversation_scanner import Message, ConversationFile
@@ -24,9 +25,8 @@ class TestCostEstimator:
         
         conv_file = ConversationFile(
             conversation_id="test-123",
-            project_id="proj-456",
-            file_path="/test/path",
-            last_modified="2024-01-01",
+            project_path="proj-456",
+            file_path=Path("/test/path"),
             message_count=2
         )
         
@@ -180,9 +180,8 @@ class TestCostEstimator:
         
         conv_file = ConversationFile(
             conversation_id="test",
-            project_id="proj",
-            file_path="/test",
-            last_modified="2024-01-01",
+            project_path="proj",
+            file_path=Path("/test"),
             message_count=2
         )
         

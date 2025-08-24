@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, field, asdict
 from enum import Enum
@@ -11,7 +12,7 @@ from anthropic import Anthropic, AsyncAnthropic
 from tqdm import tqdm
 
 from ..conversation_scanner import Message, ConversationFile
-from ..claude_md_parser import ClaudeMdStructure, Rule
+# ClaudeMdStructure no longer needed - using raw CLAUDE.md content
 from ..detectors import Intervention, InterventionType, InterventionDetector
 
 logger = logging.getLogger(__name__)
@@ -326,8 +327,8 @@ Return a comprehensive synthesis:
     
     async def analyze_conversations(self,
                                   conversations: List[Tuple[ConversationFile, List[Message]]],
-                                  claude_md: Optional[ClaudeMdStructure] = None,
-                                  claude_md_content: Optional[str] = None,  # Raw CLAUDE.md content for LLM synthesis
+                                  claude_md: Optional[Any] = None,  # Deprecated, kept for backward compatibility
+                                  claude_md_content: Optional[str] = None,  # Raw CLAUDE.md content
                                   depth: AnalysisDepth = AnalysisDepth.STANDARD,
                                   tracker: Optional['ProcessingTracker'] = None,
                                   force_all: bool = False) -> Dict[str, Any]:
@@ -902,13 +903,19 @@ Return a comprehensive synthesis:
         detector = InterventionDetector()
         potentially_valuable = []
         removed_count = 0
+        filter_reasons = {}  # Track reasons for filtering
         
         for intervention in interventions:
-            if not detector.is_obviously_low_quality(intervention):
+            is_low_quality, reason = detector.is_obviously_low_quality(intervention)
+            if not is_low_quality:
                 potentially_valuable.append(intervention)
             else:
                 removed_count += 1
-                logger.debug(f"Skipping obviously low-quality intervention: {intervention.type.value} - '{intervention.user_message[:50]}...'")
+                # Track filter reasons for statistics
+                if reason:
+                    filter_type = reason.split(':')[0]
+                    filter_reasons[filter_type] = filter_reasons.get(filter_type, 0) + 1
+                logger.debug(f"Filtered intervention ({reason}): {intervention.type.value} - '{intervention.user_message[:50]}...'")
         
         # If we still have too many, we'll need to classify them
         if len(potentially_valuable) > 15:
@@ -927,10 +934,16 @@ Return a comprehensive synthesis:
             # Analyze all potentially valuable interventions
             interventions_to_analyze = potentially_valuable[:10]
         
-        # Log filtering results
+        # Log filtering results with detailed statistics
         if len(interventions) > len(interventions_to_analyze):
             logger.info(f"Filtered interventions: {len(interventions)} -> {len(potentially_valuable)} -> {len(interventions_to_analyze)}")
             logger.info(f"Removed {removed_count} obviously low-quality interventions")
+            
+            # Log filter reason statistics if any were filtered
+            if filter_reasons:
+                reason_summary = ", ".join([f"{count} {reason}" for reason, count in filter_reasons.items()])
+                logger.info(f"Filter reasons: {reason_summary}")
+            
             if removed_count == 0 and len(interventions) > 5:
                 # Log a sample of interventions to understand why nothing was filtered
                 logger.debug(f"Sample intervention types: {[i.type.value for i in interventions[:3]]}")
@@ -1058,7 +1071,7 @@ Return a comprehensive synthesis:
                                         sample_conversations: List[Tuple[ConversationFile, List[Message]]],
                                         classifications: List[ConversationClassification],
                                         intervention_analyses: List[InterventionAnalysis],
-                                        claude_md: Optional[ClaudeMdStructure],
+                                        claude_md: Optional[Any],  # Deprecated
                                         tracker: Optional['ProcessingTracker'] = None,
                                         force_all: bool = False) -> List[DeepConversationAnalysis]:
         """Perform deep analysis using Opus with state tracking."""
@@ -1172,16 +1185,16 @@ Return a comprehensive synthesis:
                                               messages: List[Message],
                                               classification: ConversationClassification,
                                               intervention_analyses: List[InterventionAnalysis],
-                                              claude_md: Optional[ClaudeMdStructure]) -> DeepConversationAnalysis:
+                                              claude_md: Optional[Any]) -> DeepConversationAnalysis:  # Deprecated param
         """Deep analyze a single conversation."""
         # Format conversation
         conversation_text = self._format_conversation_for_analysis(messages)
         
-        # Format CLAUDE.md rules if available
+        # Use first part of CLAUDE.md content if available
         claude_md_rules = ""
-        if claude_md:
-            rule_summaries = [f"- {rule.title}" for rule in claude_md.rules[:10]]
-            claude_md_rules = "\n".join(rule_summaries)
+        if claude_md_content:
+            # Extract first 1000 chars as summary
+            claude_md_rules = claude_md_content[:1000] + "..." if len(claude_md_content) > 1000 else claude_md_content
         
         # Format intervention analyses
         intervention_summaries = [
@@ -1288,22 +1301,14 @@ Return a comprehensive synthesis:
         }
     
     async def _synthesize_claude_md_improvements(self,
-                                                claude_md: Optional[ClaudeMdStructure],
+                                                claude_md: Optional[Any],  # Deprecated
                                                 claude_md_content: Optional[str],
                                                 summary_stats: Dict[str, Any],
                                                 deep_analyses: List[DeepConversationAnalysis]) -> Dict[str, Any]:
         """Synthesize improvements to CLAUDE.md based on analysis."""
-        # Use raw content if available, otherwise fall back to structured rules
+        # Use raw content for natural synthesis
         if claude_md_content:
-            # Use raw content for more natural synthesis
             existing_content = claude_md_content[:8000]  # Limit for token constraints
-        elif claude_md:
-            # Fall back to structured rules if no raw content
-            existing_rules = "\n".join([
-                f"- {rule.title}: {rule.content[:100]}..."
-                for rule in claude_md.rules[:20]  # Limit to avoid token limits
-            ])
-            existing_content = f"Extracted rules:\n{existing_rules}"
         else:
             existing_content = "No existing CLAUDE.md provided"
         

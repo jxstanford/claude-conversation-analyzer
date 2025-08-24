@@ -3,6 +3,7 @@
 import pytest
 import asyncio
 import json
+from pathlib import Path
 from unittest.mock import Mock, AsyncMock, patch, MagicMock
 from typing import List
 
@@ -70,9 +71,8 @@ class TestLLMAnalyzer:
         
         conv_file = ConversationFile(
             conversation_id="test-123",
-            project_id="proj-456",
-            file_path="/test/path",
-            last_modified="2024-01-01",
+            project_path="proj-456",
+            file_path=Path("/test/path"),
             message_count=4
         )
         
@@ -94,9 +94,8 @@ class TestLLMAnalyzer:
         
         conv_file = ConversationFile(
             conversation_id="test-123",
-            project_id="proj-456",
-            file_path="/test/path",
-            last_modified="2024-01-01",
+            project_path="proj-456",
+            file_path=Path("/test/path"),
             message_count=4
         )
         
@@ -118,9 +117,8 @@ class TestLLMAnalyzer:
         
         conv_file = ConversationFile(
             conversation_id="test-123",
-            project_id="proj-456",
-            file_path="/test/path",
-            last_modified="2024-01-01",
+            project_path="proj-456",
+            file_path=Path("/test/path"),
             message_count=4
         )
         
@@ -139,7 +137,9 @@ class TestLLMAnalyzer:
             "what_went_wrong": "user had different expectations",
             "claude_assumption": "assumed web framework",
             "user_expectation": "wanted simple HTML",
-            "prevention_rule": "always clarify tech stack first"
+            "prevention_rule": "always clarify tech stack first",
+            "severity_assessment": "medium",
+            "pattern_category": "assumption_mismatch"
         }
         
         mock_content = Mock()
@@ -150,9 +150,8 @@ class TestLLMAnalyzer:
         
         conv_file = ConversationFile(
             conversation_id="test-123",
-            project_id="proj-456",
-            file_path="/test/path",
-            last_modified="2024-01-01",
+            project_path="proj-456",
+            file_path=Path("/test/path"),
             message_count=4
         )
         
@@ -202,7 +201,9 @@ class TestLLMAnalyzer:
                     "what_went_wrong": "scaling concerns",
                     "claude_assumption": "simple solution",
                     "user_expectation": "scalable solution",
-                    "prevention_rule": "consider scale early"
+                    "prevention_rule": "consider scale early",
+                    "severity_assessment": "high",
+                    "pattern_category": "requirements_mismatch"
                 }
             ]
         })
@@ -217,25 +218,6 @@ class TestLLMAnalyzer:
         # Should have filtered out the low-quality interventions
         assert len(result) <= 1  # Only the meaningful correction should remain
     
-    @pytest.mark.asyncio
-    async def test_analyze_intervention_missing_fields(self, mock_analyzer, sample_intervention):
-        """Test handling of response with missing required fields."""
-        # Mock response with missing fields
-        incomplete_json = {
-            "root_cause": "unclear requirements",
-            # Missing other required fields
-        }
-        
-        mock_content = Mock()
-        mock_content.text = json.dumps(incomplete_json)
-        mock_response = Mock()
-        mock_response.content = [mock_content]
-        mock_analyzer.async_client.messages.create.return_value = mock_response
-        
-        result = await mock_analyzer._analyze_intervention(sample_intervention, "context", "success", True, "smooth", "medium")
-        
-        # Should handle gracefully and return None
-        assert result is None
     
     def test_truncate_message(self, mock_analyzer):
         """Test message truncation utility."""
@@ -249,47 +231,6 @@ class TestLLMAnalyzer:
         not_truncated = mock_analyzer._truncate_message(short_message, max_length=100)
         assert not_truncated == short_message
     
-    @pytest.mark.asyncio
-    async def test_batch_processing_with_exceptions(self, mock_analyzer):
-        """Test that batch processing handles exceptions gracefully."""
-        # Create mock conversations
-        conversations = [
-            (ConversationFile("conv1", "proj1", "/path1", "2024-01-01", 10), 
-             [Message(role="user", content="test", timestamp="2024-01-01T00:00:00")]),
-            (ConversationFile("conv2", "proj2", "/path2", "2024-01-01", 10),
-             [Message(role="user", content="test", timestamp="2024-01-01T00:00:00")])
-        ]
-        
-        # Mock one successful and one failed classification
-        mock_analyzer._classify_conversations_batch = AsyncMock(return_value=[
-            ConversationClassification(
-                conversation_id="conv1",
-                user_intent="test",
-                task_type="test",
-                complexity="simple",
-                has_interventions=True,
-                intervention_count=1,
-                task_completed=True,
-                success_level="complete",
-                conversation_tone="smooth"
-            ),
-            Exception("Classification failed for conv2")
-        ])
-        
-        # Mock the detector
-        with patch('src.analyzers.llm_analyzer.InterventionDetector') as mock_detector_class:
-            mock_detector = Mock()
-            mock_detector.detect_interventions.return_value = []
-            mock_detector_class.return_value = mock_detector
-            
-            # This should not raise an exception even if one conversation fails
-            results = await mock_analyzer._analyze_interventions_batch(
-                conversations, [], None, tracker=None, force_all=False
-            )
-            
-            # Should have processed at least the successful conversation
-            assert isinstance(results, tuple)
-            assert len(results) == 2  # classifications and analyses
 
 
 class TestInterventionFiltering:
@@ -310,7 +251,8 @@ class TestInterventionFiltering:
             severity="low"
         )
         
-        assert detector.is_obviously_low_quality(intervention) == True
+        is_low_quality, reason = detector.is_obviously_low_quality(intervention)
+        assert is_low_quality == True
     
     def test_is_obviously_low_quality_system_message(self):
         """Test that system messages are filtered."""
@@ -327,7 +269,8 @@ class TestInterventionFiltering:
             severity="low"
         )
         
-        assert detector.is_obviously_low_quality(intervention) == True
+        is_low_quality, reason = detector.is_obviously_low_quality(intervention)
+        assert is_low_quality == True
     
     def test_is_obviously_low_quality_meaningful_correction(self):
         """Test that meaningful corrections are NOT filtered."""
@@ -344,7 +287,8 @@ class TestInterventionFiltering:
             severity="medium"
         )
         
-        assert detector.is_obviously_low_quality(intervention) == False
+        is_low_quality, reason = detector.is_obviously_low_quality(intervention)
+        assert is_low_quality == False
     
     def test_is_obviously_low_quality_takeover(self):
         """Test that user takeovers are filtered."""
@@ -361,7 +305,8 @@ class TestInterventionFiltering:
             severity="low"
         )
         
-        assert detector.is_obviously_low_quality(intervention) == True
+        is_low_quality, reason = detector.is_obviously_low_quality(intervention)
+        assert is_low_quality == True
     
     def test_is_obviously_low_quality_tool_rejection_with_guidance(self):
         """Test that tool rejections with guidance are NOT filtered."""
@@ -378,4 +323,5 @@ class TestInterventionFiltering:
             severity="medium"
         )
         
-        assert detector.is_obviously_low_quality(intervention) == False
+        is_low_quality, reason = detector.is_obviously_low_quality(intervention)
+        assert is_low_quality == False

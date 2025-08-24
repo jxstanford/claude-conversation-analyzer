@@ -16,7 +16,7 @@ from ..analyzers import (
     InterventionAnalysis,
     DeepConversationAnalysis
 )
-from ..claude_md_parser import ClaudeMdStructure
+# ClaudeMdStructure no longer needed - simplified to use raw content
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ class ReportGenerator:
     
     def generate_all_reports(self, 
                            analysis_results: Dict[str, Any],
-                           claude_md: Optional[ClaudeMdStructure] = None) -> Dict[str, Path]:
+                           claude_md: Optional[Any] = None) -> Dict[str, Path]:  # Deprecated param
         """Generate all report types."""
         logger.info(f"Generating reports in {self.output_dir}")
         generated_files = {}
@@ -373,7 +373,7 @@ User interventions are critical moments where Claude's actions didn't align with
     
     def generate_claude_md_diff_analysis(self, 
                                        analysis_results: Dict[str, Any],
-                                       existing_claude_md: ClaudeMdStructure) -> Path:
+                                       existing_claude_md: Optional[Any] = None) -> Optional[Path]:
         """Generate comprehensive diff analysis for CLAUDE.md."""
         synthesis = analysis_results.get('claude_md_synthesis', {})
         stats = analysis_results['summary_statistics']
@@ -461,7 +461,7 @@ These rules have proven effective and should remain unchanged:
     
     def generate_proposed_claude_md(self, 
                                    analysis_results: Dict[str, Any],
-                                   existing_claude_md: ClaudeMdStructure) -> Path:
+                                   existing_claude_md: Optional[Any] = None) -> Optional[Path]:
         """Generate a complete proposed CLAUDE.md incorporating all changes."""
         synthesis = analysis_results.get('claude_md_synthesis', {})
         
@@ -473,25 +473,26 @@ These rules have proven effective and should remain unchanged:
         rules_to_remove = {r['rule'] for r in synthesis.get('rules_to_remove', [])}
         rules_to_modify = {r['current']: r['proposed'] for r in synthesis.get('rules_to_modify', [])}
         
-        # Process existing sections
+        # Process existing sections if available
         current_section = None
-        for rule in existing_claude_md.rules:
-            # Skip removed rules
-            if rule.title in rules_to_remove:
-                continue
-            
-            # Check if this starts a new section
-            if rule.section != current_section:
-                current_section = rule.section
-                proposed_content += f"\n## {current_section}\n\n"
-            
-            # Apply modifications or keep as is
-            if rule.title in rules_to_modify:
-                proposed_content += f"### {rule.title}\n"
-                proposed_content += f"{rules_to_modify[rule.title]}\n\n"
-            else:
-                proposed_content += f"### {rule.title}\n"
-                proposed_content += f"{rule.content}\n\n"
+        if existing_claude_md and hasattr(existing_claude_md, 'rules'):
+            for rule in existing_claude_md.rules:
+                # Skip removed rules
+                if rule.title in rules_to_remove:
+                    continue
+                
+                # Check if this starts a new section
+                if rule.section != current_section:
+                    current_section = rule.section
+                    proposed_content += f"\n## {current_section}\n\n"
+                
+                # Apply modifications or keep as is
+                if rule.title in rules_to_modify:
+                    proposed_content += f"### {rule.title}\n"
+                    proposed_content += f"{rules_to_modify[rule.title]}\n\n"
+                else:
+                    proposed_content += f"### {rule.title}\n"
+                    proposed_content += f"{rule.content}\n\n"
         
         # Add new rules grouped by priority
         new_rules = synthesis.get('rules_to_add', [])
@@ -525,11 +526,16 @@ These rules have proven effective and should remain unchanged:
         return proposed_path
     
     def generate_claude_md_patch(self, 
-                                existing_claude_md: ClaudeMdStructure,
-                                proposed_path: Path) -> Optional[Path]:
+                                existing_claude_md: Optional[Any] = None,
+                                proposed_path: Optional[Path] = None) -> Optional[Path]:
         """Generate a unified diff patch file."""
         import subprocess
         
+        # Check if we can generate a patch
+        if not existing_claude_md or not proposed_path:
+            logger.warning("Cannot generate patch - missing required inputs")
+            return None
+            
         # Get the original CLAUDE.md path
         original_path = Path(existing_claude_md.file_path) if hasattr(existing_claude_md, 'file_path') else None
         if not original_path or not original_path.exists():

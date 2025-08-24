@@ -16,7 +16,7 @@ from rich.logging import RichHandler
 from dotenv import load_dotenv
 
 from src.conversation_scanner import ConversationScanner
-from src.claude_md_parser import ClaudeMdParser
+# ClaudeMdParser no longer needed - we just pass raw CLAUDE.md content
 from src.analyzers import LLMAnalyzer, AnalysisDepth
 from src.generators import ReportGenerator
 from src.detectors import InterventionDetector
@@ -263,8 +263,6 @@ async def analyze_conversations(
     
     # Step 2: Read CLAUDE.md if provided or check default location
     claude_md_content = None
-    claude_md_structure = None  # Keep for backward compatibility
-    parser = ClaudeMdParser()
     
     # If no claude_md_path provided, check default location
     if not claude_md_path:
@@ -279,11 +277,6 @@ async def analyze_conversations(
             with open(claude_md_path, 'r', encoding='utf-8') as f:
                 claude_md_content = f.read()
             console.print(f"[green]Loaded CLAUDE.md ({len(claude_md_content)} characters)[/green]")
-            
-            # Still parse for basic validation and backward compatibility
-            claude_md_structure = parser.parse(claude_md_path)
-            if claude_md_structure:
-                console.print(f"[dim]Found {len(claude_md_structure.rules)} rules in CLAUDE.md[/dim]")
         except Exception as e:
             logger.error(f"Failed to read CLAUDE.md: {e}")
             claude_md_content = None
@@ -359,8 +352,8 @@ async def analyze_conversations(
     with console.status("[bold green]Analyzing conversations with Claude..."):
         analysis_results = await analyzer.analyze_conversations(
             conversations=conversations_with_messages,
-            claude_md=claude_md_structure,
-            claude_md_content=claude_md_content,  # Pass raw content for LLM-based synthesis
+            claude_md=None,  # No longer passing structured rules
+            claude_md_content=claude_md_content,  # Just pass raw content
             depth=AnalysisDepth.DEEP,
             tracker=tracker,
             force_all=process_all
