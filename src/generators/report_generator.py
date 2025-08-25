@@ -14,7 +14,7 @@ from ..analyzers import (
     DeepConversationAnalysis
 )
 # ClaudeMdStructure no longer needed - simplified to use raw content
-from .modern_dashboard import generate_modern_dashboard
+from .dashboard import generate_dashboard
 from ..metrics_collector import MetricsCollector
 from ..cost_estimator import CLAUDE_PRICING
 
@@ -586,7 +586,7 @@ These rules have proven effective and should remain unchanged:
             analysis_results['timestamp'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
         # Use the modern dashboard generator
-        return generate_modern_dashboard(self.output_dir, analysis_results)
+        return generate_dashboard(self.output_dir, analysis_results)
     
     def save_raw_data(self, analysis_results: Dict[str, Any]) -> Path:
         """Save raw analysis data as JSON."""
@@ -846,20 +846,202 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
         
         return content
     
+    def _generate_traceability_matrix(self, analysis_results: Dict[str, Any], synthesis: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate a comprehensive traceability matrix mapping findings to changes.
+        
+        Args:
+            analysis_results: Complete analysis results
+            synthesis: LLM synthesis results
+            
+        Returns:
+            Traceability matrix showing what was found vs what was implemented
+        """
+        matrix = {
+            "analysis_summary": {
+                "total_conversations": analysis_results.get('summary_statistics', {}).get('total_conversations', 0),
+                "conversations_with_interventions": analysis_results.get('summary_statistics', {}).get('conversations_with_interventions', 0),
+                "total_interventions": analysis_results.get('summary_statistics', {}).get('total_interventions', 0),
+            },
+            "intervention_type_mapping": {},
+            "recommendations": [],
+            "systemic_issues": [],
+            "unused_findings": [],
+            "implementation_summary": {
+                "total_recommendations": 0,
+                "implemented": 0,
+                "partially_implemented": 0,
+                "not_implemented": 0
+            }
+        }
+        
+        # Get intervention analyses
+        intervention_analyses = analysis_results.get('intervention_analyses', [])
+        intervention_counts = {}
+        for ia in intervention_analyses:
+            category = ia.get('pattern_category', 'unknown')
+            intervention_counts[category] = intervention_counts.get(category, 0) + 1
+        
+        # Map intervention types to proposed changes
+        for category, count in intervention_counts.items():
+            matrix["intervention_type_mapping"][category] = {
+                "count": count,
+                "mapped_to_changes": [],
+                "status": "not_mapped"
+            }
+        
+        # Process top recommendations
+        deep_analyses = analysis_results.get('deep_analyses', [])
+        all_recommendations = []
+        
+        # Extract recommendations from deep analyses
+        for da in deep_analyses:
+            recs = getattr(da, 'recommendations', None) or da.get('recommendations', [])
+            for rec in recs:
+                all_recommendations.append(rec)
+        
+        # Count recommendation frequencies
+        rec_counts = {}
+        for rec in all_recommendations:
+            rec_counts[rec] = rec_counts.get(rec, 0) + 1
+        
+        # Process synthesis sections if available
+        implemented_items = set()
+        if synthesis:
+            # Track what was implemented
+            for section in synthesis.get('sections_to_enhance', []):
+                implemented_items.add(section.get('reason', ''))
+                if 'evidence_count' in section:
+                    # Map to intervention type if possible
+                    for itype, data in matrix["intervention_type_mapping"].items():
+                        if data["count"] == section['evidence_count']:
+                            data["mapped_to_changes"].append(section.get('section', ''))
+                            data["status"] = "implemented"
+                            
+            for guideline in synthesis.get('new_guidelines', []):
+                implemented_items.add(guideline.get('reason', ''))
+                
+            for clarification in synthesis.get('clarifications_to_add', []):
+                implemented_items.add(clarification.get('reason', ''))
+        
+        # Build recommendations list with implementation status
+        for rec, count in sorted(rec_counts.items(), key=lambda x: x[1], reverse=True)[:10]:
+            status = "not_implemented"
+            location = None
+            
+            # Check if this recommendation was implemented
+            # First check direct reasons
+            for impl_reason in implemented_items:
+                if rec.lower() in impl_reason.lower() or impl_reason.lower() in rec.lower():
+                    status = "implemented"
+                    # Try to find location in synthesis
+                    for section in synthesis.get('sections_to_enhance', []):
+                        if section.get('reason', '') == impl_reason:
+                            location = f"Section: {section.get('section', 'Unknown')}"
+                            break
+                    break
+            
+            # If not found, check guideline text and reasons for semantic matches
+            if status == "not_implemented":
+                rec_words = set(rec.lower().split())
+                # Check new guidelines
+                for guideline in synthesis.get('new_guidelines', []):
+                    reason = guideline.get('reason', '').lower()
+                    text = guideline.get('guideline', '').lower()
+                    # Check if recommendation is mentioned in reason or significant overlap in text
+                    if rec.lower() in reason or len(rec_words.intersection(text.split())) > 3:
+                        status = "implemented"
+                        location = f"Section: {guideline.get('section', 'Unknown')}"
+                        break
+            
+            matrix["recommendations"].append({
+                "text": rec,
+                "evidence_count": count,
+                "status": status,
+                "location": location,
+                "source": "deep_analyses"
+            })
+        
+        # Process systemic issues
+        systemic_issues = []
+        for da in deep_analyses:
+            issues = getattr(da, 'systemic_issues', None) or da.get('systemic_issues', [])
+            systemic_issues.extend(issues)
+        
+        # Count systemic issues
+        issue_counts = {}
+        for issue in systemic_issues:
+            issue_counts[issue] = issue_counts.get(issue, 0) + 1
+        
+        for issue, count in sorted(issue_counts.items(), key=lambda x: x[1], reverse=True):
+            status = "not_addressed"
+            for impl_reason in implemented_items:
+                if issue.lower() in impl_reason.lower() or any(word in impl_reason.lower() for word in issue.lower().split()[:3]):
+                    status = "addressed"
+                    break
+                    
+            matrix["systemic_issues"].append({
+                "issue": issue,
+                "frequency": count,
+                "status": status
+            })
+        
+        # Identify valuable unused findings
+        # Look for patterns with high occurrence that weren't addressed
+        for category, count in intervention_counts.items():
+            if count > 10 and matrix["intervention_type_mapping"][category]["status"] == "not_mapped":
+                matrix["unused_findings"].append({
+                    "type": "intervention_pattern",
+                    "category": category,
+                    "count": count,
+                    "potential_value": "high" if count > 20 else "medium"
+                })
+        
+        # Calculate implementation summary
+        total_recs = len(matrix["recommendations"])
+        implemented = sum(1 for r in matrix["recommendations"] if r["status"] == "implemented")
+        partially = sum(1 for r in matrix["recommendations"] if r["status"] == "partial")
+        
+        matrix["implementation_summary"] = {
+            "total_recommendations": total_recs,
+            "implemented": implemented,
+            "partially_implemented": partially,
+            "not_implemented": total_recs - implemented - partially,
+            "implementation_rate": f"{(implemented / total_recs * 100):.1f}%" if total_recs > 0 else "0%"
+        }
+        
+        return matrix
+    
     def generate_claude_md_from_analysis(self, analysis_results: Dict[str, Any]) -> str:
         """Generate a comprehensive CLAUDE.md file based on analysis insights."""
         stats = analysis_results.get('summary_statistics', {})
         synthesis = analysis_results.get('claude_md_synthesis', {})
         original_content = analysis_results.get('original_claude_md_content', '')
         
-        # If we have LLM synthesis, use the new conservative approach
-        if synthesis:
-            return self._generate_integrated_claude_md(analysis_results)
+        # Generate traceability matrix
+        traceability = self._generate_traceability_matrix(analysis_results, synthesis)
         
-        # If we have original content but no synthesis, preserve it with minimal additions
-        if original_content:
+        # Save traceability matrix
+        traceability_path = self.output_dir / "traceability_matrix.json"
+        with open(traceability_path, 'w') as f:
+            json.dump(traceability, f, indent=2)
+        logger.info(f"Saved traceability matrix to {traceability_path}")
+        
+        # Store in analysis results for dashboard
+        analysis_results['traceability_matrix'] = traceability
+        
+        # Generate the enhanced CLAUDE.md
+        enhanced_content = ""
+        if synthesis:
+            enhanced_content = self._generate_integrated_claude_md(analysis_results)
+        elif original_content:
             logger.info("No synthesis available, preserving original CLAUDE.md with minimal additions")
-            return self._add_minimal_mechanical_suggestions(original_content, analysis_results)
+            enhanced_content = self._add_minimal_mechanical_suggestions(original_content, analysis_results)
+        
+        # Store the proposed content for diff display
+        if enhanced_content:
+            analysis_results['proposed_claude_md_content'] = enhanced_content
+        
+        return enhanced_content
         
         # Only if we have neither synthesis nor original content, fall back to mechanical generation
         logger.warning("No original CLAUDE.md or synthesis available, generating from scratch")

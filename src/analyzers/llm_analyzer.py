@@ -282,15 +282,27 @@ ANALYSIS FINDINGS:
 - Common intervention patterns: {intervention_patterns}
 - Top systemic issues: {top_issues}
 - Top recommendations from analysis: {top_recommendations}
+- All intervention types with counts: {all_intervention_types}
+- Prevention rules from intervention analysis: {prevention_rules}
 
-IMPORTANT CONTEXT: Some analyzed conversations may have been truncated or incomplete. Focus on improving Claude's general coding assistance, not addressing analysis artifacts.
+IMPORTANT: This analysis cost significant API usage (~$14). We need COMPREHENSIVE coverage of ALL findings.
 
-CRITICAL INSTRUCTIONS:
-1. PRESERVE the existing document - we want to enhance, not replace
-2. Keep ALL existing content unless it directly contradicts evidence
-3. Suggest only ADDITIVE changes and minor clarifications
-4. Respect the document's current structure, style, and voice
-5. Focus on the most impactful improvements (quality over quantity)
+MANDATORY REQUIREMENTS - YOU MUST:
+1. PRESERVE the existing document structure and content
+2. Generate AT LEAST ONE improvement for EACH intervention type listed above
+3. Include ALL top 10 recommendations in some form (as new rules, clarifications, or examples)
+4. Convert EVERY prevention rule with >2 occurrences into a concrete guideline
+5. Address ALL systemic issues with >2 occurrences
+6. Aim for 15-20 total improvements minimum to justify the analysis cost
+
+COVERAGE CHECKLIST (ensure you address ALL):
+- [ ] incomplete_task (73) - Must add completion criteria/checklist
+- [ ] other (71) - Must analyze and add catch-all guidelines  
+- [ ] technical_error (46) - Must add tool verification steps
+- [ ] premature_action (42) - Must enhance discovery protocol
+- [ ] misunderstanding (33) - Must add clarification protocol
+- [ ] scope_creep (28) - Must add scope management rules
+- [ ] wrong_approach (15) - Must add approach validation steps
 
 ANALYSIS APPROACH:
 1. Study the existing document carefully:
@@ -361,7 +373,14 @@ Return a CONSERVATIVE synthesis focused on enhancement:
             "reason": "Why this small change helps"
         }}
     ],
-    "synthesis_summary": "Brief summary emphasizing how these minimal additions enhance the existing document"
+    "coverage_report": {{
+        "intervention_types_addressed": ["list of all types with improvements"],
+        "recommendations_included": ["list of which top recommendations were addressed"],
+        "prevention_rules_converted": ["list of rules turned into guidelines"],
+        "total_improvements": number,
+        "justification": "Explanation of how this provides value for the $14 analysis cost"
+    }},
+    "synthesis_summary": "Summary explaining how these comprehensive additions address the analysis findings"
 }}"""
         }
     
@@ -1531,21 +1550,39 @@ Return a CONSERVATIVE synthesis focused on enhancement:
         
         # Format intervention patterns
         intervention_patterns = []
+        all_intervention_types = []
         if summary_stats.get('intervention_categories'):
-            for category, count in list(summary_stats['intervention_categories'].items())[:5]:
+            for category, count in summary_stats['intervention_categories'].items():
                 intervention_patterns.append(f"{category}: {count}")
+                all_intervention_types.append(f"{category}: {count}")
         
         # Format top issues and recommendations
-        top_issues = [issue for issue, _ in summary_stats.get('top_systemic_issues', [])[:5]]
-        top_recommendations = [rec for rec, _ in summary_stats.get('top_recommendations', [])[:5]]
+        top_issues = [issue for issue, _ in summary_stats.get('top_systemic_issues', [])[:10]]
+        top_recommendations = [rec for rec, _ in summary_stats.get('top_recommendations', [])[:10]]
+        
+        # Extract prevention rules from intervention analyses
+        prevention_rules = []
+        intervention_analyses = summary_stats.get('intervention_analyses', [])
+        rule_counts = {}
+        for ia in intervention_analyses:
+            rule = ia.get('prevention_rule', '')
+            if rule and rule not in ["Cannot generate actionable rule from incomplete data",
+                                   "Cannot generate actionable rule from incomplete intervention data"]:
+                rule_counts[rule] = rule_counts.get(rule, 0) + 1
+        
+        # Get top prevention rules
+        for rule, count in sorted(rule_counts.items(), key=lambda x: x[1], reverse=True)[:10]:
+            prevention_rules.append(f"{rule} (found {count} times)")
         
         prompt = self.prompts["synthesize_claude_md"].format(
             existing_content=existing_content,
             total_conversations=summary_stats.get('total_conversations', 0),
             success_rate=summary_stats.get('success_rate', 0) * 100,
-            intervention_patterns=", ".join(intervention_patterns),
+            intervention_patterns=", ".join(intervention_patterns[:5]),
             top_issues=", ".join(top_issues),
-            top_recommendations=", ".join(top_recommendations)
+            top_recommendations=", ".join(top_recommendations),
+            all_intervention_types="; ".join(all_intervention_types),
+            prevention_rules="; ".join(prevention_rules[:5]) if prevention_rules else "No specific prevention rules found"
         )
         
         try:

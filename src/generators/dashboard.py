@@ -235,7 +235,7 @@ def _generate_performance_metrics_section(analysis_results: Dict[str, Any]) -> s
     """
 
 
-def generate_modern_dashboard(output_dir: Path, analysis_results: Dict[str, Any]) -> Path:
+def generate_dashboard(output_dir: Path, analysis_results: Dict[str, Any]) -> Path:
     """Generate a modern interactive HTML dashboard."""
     stats = analysis_results.get('summary_statistics', {})
     
@@ -652,23 +652,196 @@ def generate_modern_dashboard(output_dir: Path, analysis_results: Dict[str, Any]
         <!-- CLAUDE.md Diff View -->
         {_generate_claude_md_diff_section(analysis_results)}
         
-        <!-- Top Recommendations -->
-        <div class="recommendations">
+        <!-- Implementation Status -->
+        <div class="implementation-status">
+            <h3>📊 Recommendations Implementation Status</h3>
+"""
+    
+    # Check if we have traceability matrix
+    traceability = analysis_results.get('traceability_matrix')
+    if traceability:
+        impl_summary = traceability.get('implementation_summary', {})
+        html_content += f"""
+            <div class="status-summary" style="background: #f0f4f8; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                <p style="font-size: 24px; margin: 0;"><strong>Implementation Rate:</strong> {impl_summary.get('implementation_rate', '0%')}</p>
+                <p style="margin: 10px 0 0 0;">✅ Implemented: {impl_summary.get('implemented', 0)} | 
+                   ⚠️ Partial: {impl_summary.get('partially_implemented', 0)} | 
+                   ❌ Not Implemented: {impl_summary.get('not_implemented', 0)}</p>
+            </div>
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr style="background: #e0e6ed;">
+                        <th style="padding: 10px; text-align: left; border-bottom: 2px solid #333;">Recommendation</th>
+                        <th style="padding: 10px; text-align: center; border-bottom: 2px solid #333;">Evidence</th>
+                        <th style="padding: 10px; text-align: center; border-bottom: 2px solid #333;">Status</th>
+                        <th style="padding: 10px; text-align: left; border-bottom: 2px solid #333;">Location</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+        
+        for rec in traceability.get('recommendations', [])[:10]:
+            status_icon = "✅" if rec['status'] == "implemented" else "⚠️" if rec['status'] == "partial" else "❌"
+            location = rec.get('location', 'Not implemented')
+            html_content += f"""
+                    <tr style="border-bottom: 1px solid #ddd;">
+                        <td style="padding: 10px;">{rec['text']}</td>
+                        <td style="padding: 10px; text-align: center;">{rec['evidence_count']}</td>
+                        <td style="padding: 10px; text-align: center;">{status_icon} {rec['status'].title()}</td>
+                        <td style="padding: 10px;">{location}</td>
+                    </tr>"""
+        
+        html_content += """
+                </tbody>
+            </table>
+        </div>
+        
+        <!-- Unused High-Value Findings -->
+        <div class="unused-findings" style="margin-top: 30px; background: #fff8e6; padding: 20px; border-radius: 8px; border-left: 4px solid #ff9800;">
+            <h3>⚠️ High-Value Findings Not Yet Addressed</h3>
+            <ul>
+"""
+        
+        unused = traceability.get('unused_findings', [])
+        if unused:
+            for finding in unused:
+                html_content += f"""
+                <li><strong>{finding['category'].replace('_', ' ').title()}</strong> - {finding['count']} occurrences 
+                    (Potential value: {finding['potential_value']})</li>"""
+        else:
+            html_content += "<li>All major findings have been addressed</li>"
+            
+        html_content += """
+            </ul>
+        </div>
+"""
+    else:
+        # Fallback to original simple recommendations list
+        html_content += """
             <h3>💡 Top Recommendations for CLAUDE.md</h3>
             <ul>
 """
-    
-    # Add top recommendations
-    top_recs = stats.get('top_recommendations', [])
-    if top_recs:
-        for rec, count in top_recs[:5]:
-            html_content += f"                <li>{rec}</li>\n"
-    else:
-        html_content += "                <li>No recommendations generated yet</li>\n"
-    
-    html_content += """            </ul>
-        </div>
         
+        # Add top recommendations
+        top_recs = stats.get('top_recommendations', [])
+        if top_recs:
+            for rec, count in top_recs[:5]:
+                html_content += f"                <li>{rec}</li>\n"
+        else:
+            html_content += "                <li>No recommendations generated yet</li>\n"
+        
+        html_content += """            </ul>
+        </div>
+"""
+    
+    # Add intervention type mapping if available
+    if traceability:
+        html_content += """
+        <!-- Intervention Type Mapping -->
+        <div class="intervention-mapping" style="margin-top: 30px;">
+            <h3>🔗 Intervention Types to CLAUDE.md Mapping</h3>
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr style="background: #e0e6ed;">
+                        <th style="padding: 10px; text-align: left;">Intervention Type</th>
+                        <th style="padding: 10px; text-align: center;">Count</th>
+                        <th style="padding: 10px; text-align: left;">Mapped To</th>
+                        <th style="padding: 10px; text-align: center;">Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+        
+        intervention_mapping = traceability.get('intervention_type_mapping', {})
+        for itype, data in sorted(intervention_mapping.items(), key=lambda x: x[1]['count'], reverse=True):
+            if data['count'] > 5:  # Only show significant patterns
+                status_icon = "✅" if data['status'] == "implemented" else "❌"
+                mapped_to = ", ".join(data['mapped_to_changes']) if data['mapped_to_changes'] else "Not mapped"
+                html_content += f"""
+                    <tr style="border-bottom: 1px solid #ddd;">
+                        <td style="padding: 10px;">{itype.replace('_', ' ').title()}</td>
+                        <td style="padding: 10px; text-align: center;">{data['count']}</td>
+                        <td style="padding: 10px;">{mapped_to}</td>
+                        <td style="padding: 10px; text-align: center;">{status_icon} {data['status'].title()}</td>
+                    </tr>"""
+        
+        html_content += """
+                </tbody>
+            </table>
+        </div>
+"""
+    
+    # Add utilization report if available
+    utilization = analysis_results.get('utilization_report')
+    if utilization:
+        html_content += f"""
+        <!-- Utilization Report -->
+        <div class="utilization-report" style="margin-top: 30px; background: #e8f5e9; padding: 20px; border-radius: 8px;">
+            <h3>💰 Value Extraction Summary</h3>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px;">
+                <div style="text-align: center;">
+                    <h4>Investment</h4>
+                    <p style="font-size: 24px; font-weight: bold;">${utilization['analysis_investment']['total_cost']:.2f}</p>
+                </div>
+                <div style="text-align: center;">
+                    <h4>Improvements</h4>
+                    <p style="font-size: 24px; font-weight: bold;">{utilization['value_extracted']['total_improvements_generated']}</p>
+                </div>
+                <div style="text-align: center;">
+                    <h4>Coverage</h4>
+                    <p style="font-size: 24px; font-weight: bold;">{utilization['value_extracted']['coverage_percentage']:.1f}%</p>
+                </div>
+                <div style="text-align: center;">
+                    <h4>Value Rating</h4>
+                    <p style="font-size: 24px; font-weight: bold;">{utilization['roi_analysis']['value_rating']}</p>
+                </div>
+            </div>
+        </div>
+"""
+    
+    # Add pattern mapping details if available
+    pattern_mapping = analysis_results.get('pattern_mapping_table')
+    if pattern_mapping:
+        html_content += """
+        <!-- Pattern Coverage Gaps -->
+        <div class="pattern-gaps" style="margin-top: 30px;">
+            <h3>🎯 Pattern Coverage Analysis</h3>
+"""
+        gaps = pattern_mapping.get('gaps', [])
+        if gaps:
+            html_content += """
+            <h4 style="color: #ff6b6b;">High-Value Patterns Not Addressed:</h4>
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr style="background: #ffe0e0;">
+                        <th style="padding: 10px; text-align: left;">Pattern</th>
+                        <th style="padding: 10px; text-align: center;">Count</th>
+                        <th style="padding: 10px; text-align: center;">Impact</th>
+                        <th style="padding: 10px; text-align: left;">Suggested Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+            for gap in gaps[:5]:  # Show top 5 gaps
+                html_content += f"""
+                    <tr style="border-bottom: 1px solid #ddd;">
+                        <td style="padding: 10px;">{gap['pattern'].replace('_', ' ').title()}</td>
+                        <td style="padding: 10px; text-align: center;">{gap['count']}</td>
+                        <td style="padding: 10px; text-align: center;">
+                            <span style="color: {'#d32f2f' if gap['impact'] == 'High' else '#f57c00'};">
+                                {gap['impact']}
+                            </span>
+                        </td>
+                        <td style="padding: 10px;">{gap['suggested_action']}</td>
+                    </tr>"""
+            
+            html_content += """
+                </tbody>
+            </table>
+"""
+        html_content += "</div>"
+    
+    html_content += """
         <!-- Success Patterns -->
         <div class="success-patterns">
             <h3>✅ Successful Patterns to Reinforce</h3>
