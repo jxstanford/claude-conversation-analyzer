@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, field, asdict
 from enum import Enum
@@ -14,6 +15,7 @@ from tqdm import tqdm
 from ..conversation_scanner import Message, ConversationFile
 # ClaudeMdStructure no longer needed - using raw CLAUDE.md content
 from ..detectors import Intervention, InterventionType, InterventionDetector
+from ..metrics_collector import MetricsCollector, APICallMetrics
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +69,7 @@ class DeepConversationAnalysis:
 class LLMAnalyzer:
     """Orchestrates multi-tier LLM analysis of conversations."""
     
-    def __init__(self, api_key: str, models: Optional[Dict[str, str]] = None, batch_size: Optional[int] = None):
+    def __init__(self, api_key: str, models: Optional[Dict[str, str]] = None, batch_size: Optional[int] = None, metrics_collector: Optional[MetricsCollector] = None):
         self.client = Anthropic(api_key=api_key)
         self.async_client = AsyncAnthropic(api_key=api_key)
         
@@ -82,6 +84,9 @@ class LLMAnalyzer:
         # Batch size for parallel processing (default: 10)
         self.batch_size = batch_size or int(os.getenv('CLAUDE_ANALYZER_BATCH_SIZE', '10'))
         logger.info(f"Using batch size: {self.batch_size}")
+        
+        # Metrics collector
+        self.metrics = metrics_collector or MetricsCollector()
         
         # Analysis prompts
         self.prompts = self._load_prompts()
@@ -266,7 +271,7 @@ Return ONLY valid JSON:
     "recommendations": ["..."]
 }}""",
 
-            "synthesize_claude_md": """Analyze and improve this CLAUDE.md document based on conversation analysis findings.
+            "synthesize_claude_md": """Analyze this CLAUDE.md document and suggest MINIMAL, HIGH-VALUE improvements based on conversation analysis findings.
 
 EXISTING CLAUDE.md DOCUMENT:
 {existing_content}
@@ -280,75 +285,83 @@ ANALYSIS FINDINGS:
 
 IMPORTANT CONTEXT: Some analyzed conversations may have been truncated or incomplete. Focus on improving Claude's general coding assistance, not addressing analysis artifacts.
 
-TASK:
-1. First, analyze the existing document:
-   - Identify its structure, sections, and formatting style
-   - Note the voice/tone (prescriptive vs suggestive, formal vs casual)
-   - Understand existing rules, principles, and guidance
-   - Observe how examples and code blocks are formatted
+CRITICAL INSTRUCTIONS:
+1. PRESERVE the existing document - we want to enhance, not replace
+2. Keep ALL existing content unless it directly contradicts evidence
+3. Suggest only ADDITIVE changes and minor clarifications
+4. Respect the document's current structure, style, and voice
+5. Focus on the most impactful improvements (quality over quantity)
 
-2. Then, based on the analysis findings, determine:
-   - Which existing guidance is working well (evidence from high success rate)
-   - Which existing rules may need clarification or enhancement
-   - What new guidance would prevent the observed issues
-   - Where in the document structure these changes best fit
+ANALYSIS APPROACH:
+1. Study the existing document carefully:
+   - Map its structure and main sections
+   - Understand its voice, tone, and style
+   - Note formatting conventions and examples
+   - Identify which guidance is already working well
 
-3. Create improvements that:
-   - Preserve the document's existing style and voice
-   - Integrate naturally with existing sections
-   - Enhance rather than duplicate existing rules
-   - Add new guidance only where gaps exist
-   - Focus on practical coding and tool usage patterns
+2. Identify enhancement opportunities:
+   - Where can existing rules be clarified with a sentence or example?
+   - What 2-3 new guidelines would prevent the most common issues?
+   - Which sections could benefit from a specific addition?
+   - Where would a concrete example help?
+
+3. Ensure all suggestions:
    - Apply to ANY Claude Code user's workflow
+   - Focus on tool usage, verification practices, and coding patterns
+   - Are actionable and specific to coding tasks
+   - Would genuinely improve Claude's assistance
 
-CRITICAL GUIDELINES FOR RECOMMENDATIONS:
-- Generate rules that improve Claude's software development assistance
-- Focus on tool usage, verification practices, and coding patterns
-- Avoid any recommendations about conversation logs or analysis processes
-- Ensure all new rules would benefit a typical Claude Code user
-- Keep recommendations actionable and specific to coding tasks
-
-Return a comprehensive synthesis:
+Return a CONSERVATIVE synthesis focused on enhancement:
 {{
-    "rules_to_keep": [
+    "document_analysis": {{
+        "structure": ["List of main sections in order"],
+        "style": "Description of voice, tone, formatting",
+        "strengths": ["What's already working well"],
+        "gaps": ["Specific areas that could be enhanced"]
+    }},
+    "sections_to_enhance": [
         {{
-            "rule": "existing rule text",
-            "reason": "why it's effective",
+            "section": "Existing section name",
+            "location": "After which paragraph/rule",
+            "addition": "Specific text to add",
+            "reason": "Why this helps",
             "evidence_count": number
         }}
     ],
-    "rules_to_modify": [
+    "clarifications_to_add": [
         {{
-            "current": "existing rule text",
-            "proposed": "improved rule text",
-            "reason": "why the change helps",
+            "existing_rule": "Current rule that needs clarification",
+            "clarification": "One sentence to add for clarity",
+            "reason": "What confusion this prevents",
             "evidence_count": number
         }}
     ],
-    "rules_to_remove": [
+    "new_guidelines": [
         {{
-            "rule": "existing rule text",
-            "reason": "why it's not helpful",
-            "evidence_count": number
-        }}
-    ],
-    "rules_to_add": [
-        {{
-            "rule": "new rule text",
-            "reason": "what problem it solves",
+            "guideline": "Complete new rule text",
+            "section": "Which existing section it belongs in",
+            "placement": "Specific location in that section",
+            "reason": "What problem it solves",
             "evidence_count": number,
             "priority": "high/medium/low"
         }}
     ],
-    "integration_guidance": {{
-        "style_notes": "Document style and voice observations",
-        "section_structure": ["Main sections identified"],
-        "formatting_conventions": "Markdown conventions used",
-        "recommended_placement": {{
-            "rule_id": "Where in document to place this change"
+    "examples_to_add": [
+        {{
+            "concept": "What the example illustrates",
+            "example": "Concrete code/command example",
+            "section": "Where to add it",
+            "reason": "Why this example helps"
         }}
-    }},
-    "synthesis_summary": "Overall assessment of CLAUDE.md effectiveness and key improvements"
+    ],
+    "minimal_edits": [
+        {{
+            "current_text": "Exact text to modify (keep small)",
+            "proposed_text": "Minor edit to that text",
+            "reason": "Why this small change helps"
+        }}
+    ],
+    "synthesis_summary": "Brief summary emphasizing how these minimal additions enhance the existing document"
 }}"""
         }
     
@@ -364,6 +377,9 @@ Return a comprehensive synthesis:
             "deep_analyses": [],
             "summary_statistics": {}
         }
+        
+        # Set conversation count in metrics
+        self.metrics.set_conversation_count(len(conversations))
         
         # Phase 1: Quick classification of all conversations
         logger.info(f"Phase 1: Classifying conversations with {self.models['classifier']}...")
@@ -419,6 +435,14 @@ Return a comprehensive synthesis:
             detector = InterventionDetector()
             total_interventions = sum(len(detector.detect_interventions(msgs)) for _, msgs in problematic_conversations)
             analyzed_interventions = len(results.get("intervention_analyses", []))
+            
+            # Count high-quality interventions
+            high_quality_count = sum(1 for ia in results.get("intervention_analyses", []) 
+                                   if ia.severity_assessment in ["high", "critical"])
+            
+            # Update metrics with intervention counts
+            self.metrics.set_intervention_counts(total_interventions, high_quality_count)
+            
             if total_interventions > analyzed_interventions:
                 results["summary_statistics"]["intervention_analysis_note"] = (
                     f"Analyzed {analyzed_interventions} out of {total_interventions} total interventions. "
@@ -536,12 +560,26 @@ Return a comprehensive synthesis:
         )
         
         try:
+            start_time = time.time()
             response = await self.async_client.messages.create(
                 model=self.models["classifier"],
                 max_tokens=500,
                 temperature=0,
                 messages=[{"role": "user", "content": prompt}]
             )
+            end_time = time.time()
+            
+            # Record metrics
+            self.metrics.record_api_call(APICallMetrics(
+                phase="classification",
+                model=self.models["classifier"],
+                start_time=start_time,
+                end_time=end_time,
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
+                cache_read_tokens=getattr(response.usage, 'cache_read_input_tokens', 0),
+                cache_creation_tokens=getattr(response.usage, 'cache_creation_input_tokens', 0)
+            ))
             
             # Parse JSON response
             content = response.content[0].text
@@ -564,6 +602,17 @@ Return a comprehensive synthesis:
                 
         except Exception as e:
             logger.error(f"Classification error: {e}")
+            # Record error metrics
+            if 'start_time' in locals():
+                self.metrics.record_api_call(APICallMetrics(
+                    phase="classification",
+                    model=self.models["classifier"],
+                    start_time=start_time,
+                    end_time=time.time(),
+                    input_tokens=0,
+                    output_tokens=0,
+                    error=str(e)
+                ))
             raise
     
     async def _analyze_interventions(self,
@@ -731,12 +780,26 @@ Return a comprehensive synthesis:
             key_messages=key_messages
         )
         
+        start_time = time.time()
         response = await self.async_client.messages.create(
             model=self.models["analyzer"],
-            max_tokens=1000,
+            max_tokens=8000,
             temperature=0,
             messages=[{"role": "user", "content": prompt}]
         )
+        end_time = time.time()
+        
+        # Record metrics
+        self.metrics.record_api_call(APICallMetrics(
+            phase="intervention_analysis",
+            model=self.models["analyzer"],
+            start_time=start_time,
+            end_time=end_time,
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            cache_read_tokens=getattr(response.usage, 'cache_read_input_tokens', 0),
+            cache_creation_tokens=getattr(response.usage, 'cache_creation_input_tokens', 0)
+        ))
         
         # Parse response safely
         try:
@@ -801,12 +864,26 @@ Return a comprehensive synthesis:
             key_messages=key_messages
         )
         
+        start_time = time.time()
         response = await self.async_client.messages.create(
             model=self.models["analyzer"],
-            max_tokens=1000,
+            max_tokens=8000,
             temperature=0,
             messages=[{"role": "user", "content": prompt}]
         )
+        end_time = time.time()
+        
+        # Record metrics
+        self.metrics.record_api_call(APICallMetrics(
+            phase="conversation_analysis",
+            model=self.models["analyzer"],
+            start_time=start_time,
+            end_time=end_time,
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            cache_read_tokens=getattr(response.usage, 'cache_read_input_tokens', 0),
+            cache_creation_tokens=getattr(response.usage, 'cache_creation_input_tokens', 0)
+        ))
         
         # Parse response safely
         try:
@@ -890,8 +967,23 @@ Return a comprehensive synthesis:
                 )
                 batch_tasks.append(task)
             
-            # Execute batch
+            # Execute batch with timing
+            batch_start_time = time.time()
             responses = await asyncio.gather(*batch_tasks)
+            batch_end_time = time.time()
+            
+            # Record metrics for each response
+            for i, response in enumerate(responses):
+                self.metrics.record_api_call(APICallMetrics(
+                    phase="quality_classification",
+                    model=self.models["classifier"],
+                    start_time=batch_start_time,
+                    end_time=batch_end_time,
+                    input_tokens=response.usage.input_tokens,
+                    output_tokens=response.usage.output_tokens,
+                    cache_read_tokens=getattr(response.usage, 'cache_read_input_tokens', 0),
+                    cache_creation_tokens=getattr(response.usage, 'cache_creation_input_tokens', 0)
+                ))
             
             # Parse responses
             for intervention, response in zip(batch, responses):
@@ -975,12 +1067,26 @@ Return a comprehensive synthesis:
         )
         
         try:
+            start_time = time.time()
             response = await self.async_client.messages.create(
                 model=self.models["analyzer"],
-                max_tokens=2000,
+                max_tokens=8000,
                 temperature=0,
                 messages=[{"role": "user", "content": prompt}]
             )
+            end_time = time.time()
+            
+            # Record metrics
+            self.metrics.record_api_call(APICallMetrics(
+                phase="intervention_bundle_analysis",
+                model=self.models["analyzer"],
+                start_time=start_time,
+                end_time=end_time,
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
+                cache_read_tokens=getattr(response.usage, 'cache_read_input_tokens', 0),
+                cache_creation_tokens=getattr(response.usage, 'cache_creation_input_tokens', 0)
+            ))
             
             # Parse response
             content = response.content[0].text
@@ -1067,6 +1173,66 @@ Return a comprehensive synthesis:
                 json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
                 # Fix bare ellipsis (convert ... to "...")
                 json_str = re.sub(r'(?<!")\.\.\.(?!")', '"..."', json_str)
+                
+                # Try a different approach - just clean up the most common issues
+                # that prevent JSON parsing without breaking already-escaped content
+                
+                # First, try to parse as-is in case it's valid
+                try:
+                    return json.loads(json_str)
+                except json.JSONDecodeError:
+                    pass
+                
+                # If that fails, try minimal fixes
+                # Fix unescaped newlines in strings (but not already escaped ones)
+                # This is tricky - we need to find actual newlines inside JSON strings
+                # Let's use a simpler approach: try to parse and if it fails at a specific
+                # character, attempt to fix that specific issue
+                
+                # For now, let's try replacing problematic patterns
+                # Replace actual newlines that aren't already escaped
+                
+                # Find strings and fix unescaped characters within them
+                def fix_json_string(s):
+                    """Fix common JSON string issues."""
+                    # State machine to track if we're inside a string
+                    result = []
+                    in_string = False
+                    escape_next = False
+                    
+                    for i, char in enumerate(s):
+                        if escape_next:
+                            result.append(char)
+                            escape_next = False
+                            continue
+                            
+                        if char == '\\' and in_string:
+                            result.append(char)
+                            escape_next = True
+                            continue
+                            
+                        if char == '"' and not escape_next:
+                            in_string = not in_string
+                            result.append(char)
+                            continue
+                            
+                        if in_string:
+                            # Replace problematic characters
+                            if char == '\n':
+                                result.append('\\n')
+                            elif char == '\r':
+                                result.append('\\r')
+                            elif char == '\t':
+                                result.append('\\t')
+                            else:
+                                result.append(char)
+                        else:
+                            result.append(char)
+                    
+                    return ''.join(result)
+                
+                json_str = fix_json_string(json_str)
+                
                 # Remove any text after the last closing brace
                 last_brace = json_str.rfind('}')
                 if last_brace > 0:
@@ -1240,12 +1406,26 @@ Return a comprehensive synthesis:
             intervention_analyses="\n".join(intervention_summaries) or "No interventions"
         )
         
+        start_time = time.time()
         response = await self.async_client.messages.create(
             model=self.models["deep_analyzer"],
-            max_tokens=2000,
+            max_tokens=8000,
             temperature=0,
             messages=[{"role": "user", "content": prompt}]
         )
+        end_time = time.time()
+        
+        # Record metrics
+        self.metrics.record_api_call(APICallMetrics(
+            phase="deep_analysis",
+            model=self.models["deep_analyzer"],
+            start_time=start_time,
+            end_time=end_time,
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            cache_read_tokens=getattr(response.usage, 'cache_read_input_tokens', 0),
+            cache_creation_tokens=getattr(response.usage, 'cache_creation_input_tokens', 0)
+        ))
         
         # Parse response with robust error handling
         content = response.content[0].text
@@ -1369,12 +1549,26 @@ Return a comprehensive synthesis:
         )
         
         try:
+            start_time = time.time()
             response = await self.async_client.messages.create(
                 model=self.models["synthesizer"],
-                max_tokens=3000,
+                max_tokens=8000,
                 temperature=0,
                 messages=[{"role": "user", "content": prompt}]
             )
+            end_time = time.time()
+            
+            # Record metrics
+            self.metrics.record_api_call(APICallMetrics(
+                phase="claude_md_synthesis",
+                model=self.models["synthesizer"],
+                start_time=start_time,
+                end_time=end_time,
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
+                cache_read_tokens=getattr(response.usage, 'cache_read_input_tokens', 0),
+                cache_creation_tokens=getattr(response.usage, 'cache_creation_input_tokens', 0)
+            ))
             
             # Parse JSON response with robust error handling
             content = response.content[0].text
@@ -1382,6 +1576,16 @@ Return a comprehensive synthesis:
                 return self._parse_json_response(content, "CLAUDE.md synthesis")
             except (ValueError, json.JSONDecodeError) as e:
                 logger.error(f"Failed to parse synthesis response: {e}")
+                # Save raw response for debugging
+                try:
+                    from pathlib import Path
+                    debug_dir = Path("./analysis_results/debug")
+                    debug_dir.mkdir(parents=True, exist_ok=True)
+                    debug_file = debug_dir / f"synthesis_error_{int(time.time())}.txt"
+                    debug_file.write_text(f"Error: {e}\n\nRaw response:\n{content}")
+                    logger.info(f"Saved failed synthesis response to {debug_file}")
+                except Exception as save_error:
+                    logger.debug(f"Could not save debug file: {save_error}")
                 return {}
                 
         except Exception as e:

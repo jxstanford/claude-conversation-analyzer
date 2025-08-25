@@ -22,6 +22,7 @@ from src.generators import ReportGenerator
 from src.detectors import InterventionDetector
 from src.processing_tracker import ProcessingTracker
 from src.cost_estimator import CostEstimator
+from src.metrics_collector import MetricsCollector
 
 # Load environment variables
 load_dotenv()
@@ -345,10 +346,15 @@ async def analyze_conversations(
     
     # Get batch size from environment or use default
     batch_size = os.getenv('CLAUDE_ANALYZER_BATCH_SIZE')
+    
+    # Create metrics collector
+    metrics_collector = MetricsCollector()
+    
     analyzer = LLMAnalyzer(
         api_key=api_key, 
         models=models if models else None,
-        batch_size=int(batch_size) if batch_size else None
+        batch_size=int(batch_size) if batch_size else None,
+        metrics_collector=metrics_collector
     )
     
     with console.status("[bold green]Analyzing conversations with Claude..."):
@@ -362,9 +368,14 @@ async def analyze_conversations(
     # Step 5: Generate reports
     console.print("\n[bold blue]Generating reports...[/bold blue]")
     
+    # Add original CLAUDE.md content to analysis results for diff view
+    if claude_md_content:
+        analysis_results['original_claude_md_content'] = claude_md_content
+    
     report_generator = ReportGenerator(output_dir=output_dir)
     generated_files = report_generator.generate_all_reports(
-        analysis_results=analysis_results
+        analysis_results=analysis_results,
+        metrics_collector=metrics_collector
     )
     
     # Display results based on whether existing CLAUDE.md was found
@@ -380,6 +391,23 @@ async def analyze_conversations(
     # Display results
     console.print("\n[bold green]Analysis Complete![/bold green]")
     logger.info(f"Analysis completed successfully. Results saved to {output_dir}")
+    
+    # Display metrics summary
+    if metrics_collector:
+        metrics = metrics_collector.get_total_metrics()
+        console.print("\n[bold]Performance Metrics:[/bold]")
+        console.print(f"  • Duration: {metrics['run_duration_formatted']}")
+        console.print(f"  • API Calls: {metrics['total_api_calls']}")
+        console.print(f"  • Total Tokens: {metrics['total_tokens']:,}")
+        console.print(f"  • Processing Rate: {metrics['conversations_per_minute']:.1f} conversations/minute")
+        
+        # Display cost if available
+        if 'costs' in analysis_results:
+            costs = analysis_results['costs']
+            console.print(f"\n[bold]Actual Costs:[/bold]")
+            console.print(f"  • Total: ${costs['total_cost']:.2f}")
+            console.print(f"  • Per Conversation: ${costs['cost_per_conversation']:.4f}")
+            console.print(f"  • Per Intervention: ${costs['cost_per_intervention']:.4f}")
     
     console.print("\n[bold]Generated Files:[/bold]")
     for file_type, file_path in generated_files.items():
@@ -440,6 +468,17 @@ async def analyze_conversations(
     metadata["success_rate"] = stats.get('success_rate', 0) if stats else 0
     # Convert Path objects to strings for JSON serialization
     metadata["generated_files"] = {k: str(v) for k, v in generated_files.items()}
+    
+    # Add metrics summary
+    if metrics_collector:
+        metrics_summary = metrics_collector.get_total_metrics()
+        metadata["metrics_summary"] = {
+            "duration_seconds": metrics_summary["run_duration_seconds"],
+            "total_api_calls": metrics_summary["total_api_calls"],
+            "total_tokens": metrics_summary["total_tokens"],
+            "conversations_per_minute": metrics_summary["conversations_per_minute"],
+            "overall_success_rate": metrics_summary["overall_success_rate"]
+        }
     
     with open(metadata_file, 'w') as f:
         json.dump(metadata, f, indent=2)

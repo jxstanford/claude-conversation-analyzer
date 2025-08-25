@@ -15,6 +15,8 @@ from ..analyzers import (
 )
 # ClaudeMdStructure no longer needed - simplified to use raw content
 from .modern_dashboard import generate_modern_dashboard
+from ..metrics_collector import MetricsCollector
+from ..cost_estimator import CLAUDE_PRICING
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +42,8 @@ class ReportGenerator:
         )
     
     def generate_all_reports(self, 
-                           analysis_results: Dict[str, Any]) -> Dict[str, Path]:
+                           analysis_results: Dict[str, Any],
+                           metrics_collector: Optional[MetricsCollector] = None) -> Dict[str, Path]:
         """Generate all report types."""
         logger.info(f"Generating reports in {self.output_dir}")
         generated_files = {}
@@ -75,6 +78,26 @@ class ReportGenerator:
         claude_md_content = self.generate_claude_md_from_analysis(analysis_results)
         new_claude_md_path.write_text(claude_md_content)
         generated_files['proposed_claude_md'] = new_claude_md_path
+        
+        # Store proposed content in analysis_results for dashboard
+        analysis_results['proposed_claude_md_content'] = claude_md_content
+        
+        # Add metrics to analysis results if available
+        if metrics_collector:
+            metrics_data = metrics_collector.get_total_metrics()
+            
+            # Calculate actual costs using default model pricing
+            # The metrics collector will map phases to the appropriate models internally
+            pricing = {
+                'classifier': CLAUDE_PRICING['claude-3-5-haiku-20241022'],
+                'analyzer': CLAUDE_PRICING['claude-3-5-sonnet-20241022'],
+                'deep_analyzer': CLAUDE_PRICING['claude-3-opus-20240229'],
+                'synthesizer': CLAUDE_PRICING['claude-3-opus-20240229']
+            }
+            
+            cost_data = metrics_collector.calculate_actual_costs(pricing)
+            analysis_results['metrics'] = metrics_data
+            analysis_results['costs'] = cost_data
         
         # Generate interactive dashboard
         logger.info("Generating interactive dashboard...")
@@ -164,6 +187,23 @@ class ReportGenerator:
             content += "\n### Top Recommendations\n"
             for rec, count in top_recs[:5]:
                 content += f"1. {rec} (suggested {count} times)\n"
+        
+        # Add metrics if available
+        if 'metrics' in analysis_results:
+            metrics = analysis_results['metrics']
+            content += "\n## Performance Metrics\n\n"
+            content += f"- **Total Duration:** {metrics['run_duration_formatted']}\n"
+            content += f"- **Total API Calls:** {metrics['total_api_calls']}\n"
+            content += f"- **Total Tokens:** {metrics['total_tokens']:,} ({metrics['total_input_tokens']:,} input / {metrics['total_output_tokens']:,} output)\n"
+            content += f"- **Processing Rate:** {metrics['conversations_per_minute']:.1f} conversations/minute\n"
+            content += f"- **API Success Rate:** {metrics['overall_success_rate']:.1f}%\n"
+            
+            if 'costs' in analysis_results:
+                costs = analysis_results['costs']
+                content += f"\n### Actual Costs\n"
+                content += f"- **Total Cost:** ${costs['total_cost']:.2f}\n"
+                content += f"- **Cost per Conversation:** ${costs['cost_per_conversation']:.4f}\n"
+                content += f"- **Cost per Intervention:** ${costs['cost_per_intervention']:.4f}\n"
         
         # Save report
         report_path = self.output_dir / "summary_report.md"
@@ -580,14 +620,21 @@ These rules have proven effective and should remain unchanged:
             'deep_analyses': [
                 {
                     'conversation_id': da.conversation_id,
-                    'patterns_identified': da.patterns_identified,
                     'systemic_issues': da.systemic_issues,
                     'successful_patterns': da.successful_patterns,
-                    'claude_md_recommendations': da.claude_md_recommendations
+                    'missing_claude_md_guidance': da.missing_claude_md_guidance,
+                    'generalizable_lessons': da.generalizable_lessons,
+                    'recommendations': da.recommendations
                 }
                 for da in analysis_results.get('deep_analyses', [])
             ]
         }
+        
+        # Add metrics and costs if available
+        if 'metrics' in analysis_results:
+            serializable_results['metrics'] = analysis_results['metrics']
+        if 'costs' in analysis_results:
+            serializable_results['costs'] = analysis_results['costs']
         
         # Save data
         data_path = self.data_dir / "analysis_results.json"
@@ -632,50 +679,170 @@ These rules have proven effective and should remain unchanged:
         logger.info(f"Extracted {min(len(intervention_analyses), 10)} intervention examples")
     
     def _generate_integrated_claude_md(self, analysis_results: Dict[str, Any]) -> str:
-        """Generate CLAUDE.md using LLM synthesis for natural integration."""
+        """Generate CLAUDE.md by applying minimal edits to the original."""
         synthesis = analysis_results.get('claude_md_synthesis', {})
         stats = analysis_results.get('summary_statistics', {})
+        original_content = analysis_results.get('original_claude_md_content', '')
         
-        # Start with a base template that respects existing style
-        integration = synthesis.get('integration_guidance', {})
-        style_notes = integration.get('style_notes', '')
+        # If no original content, fall back to creating new
+        if not original_content:
+            return self._generate_new_claude_md(analysis_results)
+        
+        # Start with the original content
+        content = original_content
+        
+        # Apply minimal edits first (these are small text replacements)
+        minimal_edits = synthesis.get('minimal_edits', [])
+        for edit in minimal_edits:
+            if edit['current_text'] in content:
+                content = content.replace(edit['current_text'], edit['proposed_text'])
+        
+        # Add clarifications to existing rules
+        clarifications = synthesis.get('clarifications_to_add', [])
+        for clarif in clarifications:
+            # Find the rule and add clarification after it
+            if clarif['existing_rule'] in content:
+                # Add clarification on the next line
+                content = content.replace(
+                    clarif['existing_rule'],
+                    f"{clarif['existing_rule']} {clarif['clarification']}"
+                )
+        
+        # Add new content to specific sections
+        sections_to_enhance = synthesis.get('sections_to_enhance', [])
+        for enhancement in sections_to_enhance:
+            # Find the location and insert the addition
+            location = enhancement['location']
+            if location in content:
+                # Insert after the specified location
+                insert_pos = content.find(location) + len(location)
+                # Find the next newline to insert after the paragraph
+                next_newline = content.find('\n', insert_pos)
+                if next_newline != -1:
+                    content = (
+                        content[:next_newline] + 
+                        f"\n\n{enhancement['addition']}" +
+                        content[next_newline:]
+                    )
+        
+        # Add new guidelines to appropriate sections
+        new_guidelines = synthesis.get('new_guidelines', [])
+        for guideline in sorted(new_guidelines, key=lambda x: x.get('priority', 'low') == 'high', reverse=True):
+            section = guideline['section']
+            placement = guideline['placement']
+            
+            # Find the section
+            if section in content and placement in content:
+                # Insert at the specified placement
+                insert_pos = content.find(placement) + len(placement)
+                next_newline = content.find('\n', insert_pos)
+                if next_newline != -1:
+                    content = (
+                        content[:next_newline] + 
+                        f"\n\n{guideline['guideline']}" +
+                        content[next_newline:]
+                    )
+        
+        # Add examples where specified
+        examples = synthesis.get('examples_to_add', [])
+        for example in examples:
+            section = example['section']
+            if section in content:
+                # Find the section and add example after it
+                section_pos = content.find(section)
+                if section_pos != -1:
+                    # Find the end of the section (next ## or end of file)
+                    next_section = content.find('\n##', section_pos + 1)
+                    if next_section == -1:
+                        next_section = len(content)
+                    
+                    # Insert example before the next section
+                    content = (
+                        content[:next_section] +
+                        f"\n\n**Example: {example['concept']}**\n```\n{example['example']}\n```\n" +
+                        content[next_section:]
+                    )
+        
+        # Add a subtle note about the update at the very top if not already present
+        if "*Updated based on analysis" not in content:
+            # Insert after the first line (usually # CLAUDE.md)
+            first_newline = content.find('\n')
+            if first_newline != -1:
+                content = (
+                    content[:first_newline] + 
+                    f"\n\n*Enhanced based on analysis of {stats.get('total_conversations', 0)} conversations*" +
+                    content[first_newline:]
+                )
+        
+        return content
+    
+    def _add_minimal_mechanical_suggestions(self, original_content: str, analysis_results: Dict[str, Any]) -> str:
+        """Add minimal mechanical suggestions to existing CLAUDE.md when synthesis fails."""
+        content = original_content
+        stats = analysis_results.get('summary_statistics', {})
+        intervention_analyses = analysis_results.get('intervention_analyses', [])
+        
+        # Add a note about the analysis at the top if not already present
+        if "*based on analysis" not in content.lower() and "*enhanced based on" not in content.lower():
+            first_newline = content.find('\n')
+            if first_newline != -1:
+                content = (
+                    content[:first_newline] + 
+                    f"\n\n*Analysis of {stats.get('total_conversations', 0)} conversations found patterns that may benefit from the guidelines below*" +
+                    content[first_newline:]
+                )
+        
+        # Only add a section if we have significant evidence of issues
+        scope_issues = sum(1 for ia in intervention_analyses if isinstance(ia, dict) and ia.get('pattern_category') == "scope_creep")
+        incomplete_issues = sum(1 for ia in intervention_analyses if isinstance(ia, dict) and ia.get('pattern_category') == "incomplete_task")
+        
+        if scope_issues > 10 or incomplete_issues > 10:
+            # Find a good place to add suggestions (end of file or before a "Common Issues" section)
+            suggestions = "\n\n## Analysis-Based Suggestions\n\n*The following patterns were observed frequently:*\n\n"
+            
+            if scope_issues > 10:
+                suggestions += """### Scope Management
+- Stay within the exact scope of the request
+- Avoid refactoring unrelated code
+- Don't add unrequested features or documentation
+
+"""
+            
+            if incomplete_issues > 10:
+                suggestions += """### Task Completion
+- Ensure all requested functionality is implemented
+- Verify the solution works before considering the task complete
+- Test edge cases when applicable
+
+"""
+            
+            # Add at the end of the document
+            content = content.rstrip() + suggestions
+        
+        return content
+    
+    def _generate_new_claude_md(self, analysis_results: Dict[str, Any]) -> str:
+        """Generate a new CLAUDE.md when no original exists."""
+        stats = analysis_results.get('summary_statistics', {})
+        synthesis = analysis_results.get('claude_md_synthesis', {})
         
         content = f"""# CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-*Updated based on analysis of {stats.get('total_conversations', 0)} conversations*
+*Generated from analysis of {stats.get('total_conversations', 0)} conversations*
+
+## Overview
+
+{synthesis.get('synthesis_summary', 'This document provides guidelines to help Claude assist more effectively with development tasks.')}
+
+## Key Guidelines
 
 """
-        
-        # Add synthesis summary as overview
-        if synthesis.get('synthesis_summary'):
-            content += f"## Overview\n\n{synthesis['synthesis_summary']}\n\n"
-        
-        # Add new rules in appropriate sections
-        rules_to_add = synthesis.get('rules_to_add', [])
-        if rules_to_add:
-            content += "## Key Guidelines\n\n"
-            for rule in rules_to_add:
-                if rule.get('priority') == 'high':
-                    content += f"### {rule['rule']}\n"
-                    content += f"{rule['reason']}\n\n"
-        
-        # Add modifications to existing rules
-        rules_to_modify = synthesis.get('rules_to_modify', [])
-        if rules_to_modify:
-            content += "## Enhanced Guidelines\n\n"
-            for mod in rules_to_modify:
-                content += f"### {mod['proposed']}\n"
-                content += f"*Enhanced from: {mod['current'][:50]}...*\n"
-                content += f"Reason: {mod['reason']}\n\n"
-        
-        # Add notes about what's working well
-        rules_to_keep = synthesis.get('rules_to_keep', [])
-        if rules_to_keep:
-            content += "## Proven Effective Practices\n\n"
-            for keep in rules_to_keep[:5]:
-                content += f"- {keep['rule']}\n"
+        # Add high-priority new guidelines
+        new_guidelines = synthesis.get('new_guidelines', [])
+        for guideline in [g for g in new_guidelines if g.get('priority') == 'high']:
+            content += f"### {guideline['guideline']}\n{guideline['reason']}\n\n"
         
         return content
     
@@ -683,12 +850,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
         """Generate a comprehensive CLAUDE.md file based on analysis insights."""
         stats = analysis_results.get('summary_statistics', {})
         synthesis = analysis_results.get('claude_md_synthesis', {})
+        original_content = analysis_results.get('original_claude_md_content', '')
         
-        # If we have LLM synthesis with integration guidance, use it
-        if synthesis and 'integration_guidance' in synthesis:
+        # If we have LLM synthesis, use the new conservative approach
+        if synthesis:
             return self._generate_integrated_claude_md(analysis_results)
         
-        # Otherwise fall back to the mechanical generation
+        # If we have original content but no synthesis, preserve it with minimal additions
+        if original_content:
+            logger.info("No synthesis available, preserving original CLAUDE.md with minimal additions")
+            return self._add_minimal_mechanical_suggestions(original_content, analysis_results)
+        
+        # Only if we have neither synthesis nor original content, fall back to mechanical generation
+        logger.warning("No original CLAUDE.md or synthesis available, generating from scratch")
         content = f"""# CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
