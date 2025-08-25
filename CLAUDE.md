@@ -49,9 +49,23 @@ black src/ *.py
 # Lint with ruff (configured in pyproject.toml)
 ruff check src/ *.py
 
-# Run tests (when implemented)
+# Run tests
 pytest tests/
 ```
+
+### Understanding the Analysis Process
+The analyzer extracts maximum value from conversations by:
+1. **Pattern Recognition**: Identifies intervention types (scope_creep, misunderstanding, etc.)
+2. **Deep Analysis**: Uses Opus to understand systemic issues
+3. **Synthesis**: Creates actionable improvements for CLAUDE.md
+4. **Traceability**: Maps every finding to specific improvements
+
+### Key Insights from Analysis
+After analyzing 140 conversations, we found:
+- **Behavioral frameworks > Rules**: Create comprehensive protocols, not one-line rules
+- **Address root causes**: Focus on WHY interventions happen, not just WHAT happened
+- **95% coverage target**: Ensure all patterns >10 occurrences are addressed
+- **Value extraction**: Each $1 spent should prevent 10+ future interventions
 
 ## Architecture Overview
 
